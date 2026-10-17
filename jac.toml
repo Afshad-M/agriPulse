@@ -30,3 +30,10 @@ watchdog = ">=3.0.0"
 
 
 [client]
+
+[jacpack]
+name = 'https___github_com_Afshad-M_agriPulse_git'
+description = 'Jac IDE snapshot for https___github_com_Afshad-M_agriPulse_git'
+
+[jachammer]
+project_id = "prj_01774d93c5794003aa2c427b0631f8eb"
