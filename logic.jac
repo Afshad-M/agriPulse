@@ -13,6 +13,23 @@ def score_route(distance_km: float, hours: float, open: bool) -> float {
     return 0.0;
 }
 
+obj CargoScore {
+    has loss: float,
+        revenue: float,
+        value: float;
+}
+
+
+def score_cargo(kg: float, price: float, elapsed_hours: float, shelf_life_hours: float, truck_cost: float) -> CargoScore {
+    loss = 1.0;
+    if shelf_life_hours > 0.0 {
+        loss = min(1.0, elapsed_hours / shelf_life_hours);
+    }
+    revenue = kg * price * (1.0 - loss);
+    value = revenue - truck_cost;
+    return CargoScore(loss=loss, revenue=revenue, value=value);
+}
+
 def baseline_plan(harvests: list[Harvest], hubs: list[Hub]) -> list[Plan] {
     # TODO(A): deterministic baseline harvest-to-hub assignment.
     return [];
