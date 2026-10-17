@@ -12,9 +12,10 @@ the model drops or invents an option, the fallback (original order) is used
 rather than trusting the model blindly.
 """
 
-import from jaclang.byllm.lib { Model }
-
-glob llm: Model = Model(model_name="gpt-4o-mini");
+# No per-file Model() override here on purpose - the provider/model is
+# configured once, project-wide, in jac.toml's [byllm.model] (api_key +
+# default_model), so switching providers is a single edit instead of
+# hunting down overrides in every file that uses by llm().
 
 # ---------------------------------------------------------------------------
 # parse_harvest: messy free text -> structured HarvestDraft.
