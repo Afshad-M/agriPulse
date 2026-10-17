@@ -1,12 +1,14 @@
 import from .api_layer { fetch_seed, fetch_baseline_plan, fetch_merge, fetch_event }
-import from .mock_layer { fetch_replan }
 
 # AgriPulse web app (C). Light, clean dashboard + a mobile-first Farmer view.
 # FRONTEND ONLY: everything here talks to the backend through api_layer.jac
 # (a thin adapter over the CONTRACT v1 endpoints), so when the backend's
 # replan_on_event stops being a stub nothing in this file changes. Until
-# then an event that comes back as the stub is shown as a clearly-labelled
-# SIMULATED report instead of replacing the dashboard with placeholder data.
+# then, an event type the backend doesn't implement comes back with an
+# empty diff and a note ending "is not handled yet" (api.jac/logic.jac) -
+# the UI detects that note and shows it verbatim instead of faking an
+# effect (a crashed price, a closed road, a planned pickup) that never
+# actually happened on the backend.
 
 glob C: dict[str, str] = {
     "page": "#F4F7F5", "surface": "#FFFFFF", "surface2": "#F8FAF9",
@@ -86,11 +88,9 @@ def:pub app -> JsxElement {
         harvest_text: str = "",
         farmer_text: str = "",
         farmer_note: str = "",
-        broken_truck_id: str = "",
         crash_market_id: str = "",
         crash_crop: str = "",
-        closed_lane: str = "",
-        messages_source: str = "live";
+        closed_lane: str = "";
 
     async can with entry {
         await load_all(False);
@@ -287,11 +287,9 @@ def:pub app -> JsxElement {
             event_report = {};
             removed_ids = [];
             added_ids = [];
-            broken_truck_id = "";
             crash_market_id = "";
             crash_crop = "";
             closed_lane = "";
-            messages_source = "live";
             farmer_note = "";
             scenario = "Baseline: every farmer ships alone";
             data_source = "real";
@@ -345,31 +343,33 @@ def:pub app -> JsxElement {
         }
         try {
             res = await fetch_event(kind, t_id, e_id, m_id, crop_v, text_in);
-            expl = res["explanation"] as str;
-            if not expl.startswith("STUB") {
-                dd = res["diff"] as dict[str, any];
+            dd = res["diff"] as dict[str, any];
+            notes_list = dd["notes"] as list[str];
+            # logic.apply_replan_event() writes this exact note for any event
+            # type it doesn't implement yet (currently every type except
+            # "truck_breakdown"); detecting it here - rather than trusting
+            # the response to mean "this really happened" - is what stops the
+            # UI from faking an effect the backend never applied.
+            not_handled = len(notes_list) > 0 and "is not handled yet" in notes_list[0];
+            if not_handled {
+                messages = [];
+                event_report = {"title": label, "source": "unhandled", "explanation": notes_list[0], "notes": []};
+            } else {
                 state = res["state"] as dict[str, any];
                 score = res["score"] as dict[str, any];
                 messages = res["messages"] as list[dict[str, any]];
                 removed_ids = dd["removedRouteIds"] as list[str];
                 added_ids = dd["addedRouteIds"] as list[str];
-                messages_source = "live";
-                event_report = {"title": label, "source": "live", "explanation": expl, "notes": dd["notes"]};
+                event_report = {"title": label, "source": "live", "explanation": res["explanation"] as str, "notes": notes_list};
                 data_source = "real";
-            } else {
-                sim = fetch_replan(kind, text_in);
-                sd = sim["diff"] as dict[str, any];
-                messages = sim["messages"] as list[dict[str, any]];
-                messages_source = "simulated";
-                event_report = {"title": label, "source": "simulated", "explanation": sim["explanation"] as str, "notes": sd["notes"]};
+                crash_market_id = m_id if kind == "price_crash" else crash_market_id;
+                crash_crop = crop_v if kind == "price_crash" else crash_crop;
+                closed_lane = e_id if kind == "road_closed" else closed_lane;
             }
             scenario = label;
-            broken_truck_id = t_id if kind == "truck_breakdown" else broken_truck_id;
-            crash_market_id = m_id if kind == "price_crash" else crash_market_id;
-            crash_crop = crop_v if kind == "price_crash" else crash_crop;
-            closed_lane = e_id if kind == "road_closed" else closed_lane;
         } except Exception {
             error = "That event could not be applied. Press Reset and try again.";
+            event_report = {};
         }
         running = False;
     }
@@ -383,7 +383,16 @@ def:pub app -> JsxElement {
         name = farmer_name_by_id[eff_farmer] if eff_farmer in farmer_name_by_id else "";
         await run_event("new_harvest", name + ": " + farmer_text);
         farmer_text = "";
-        farmer_note = t["sent"];
+        if error {
+            farmer_note = "";
+        } elif event_report and event_report["source"] == "live" {
+            farmer_note = t["sent"];
+        } else {
+            # "new_harvest" isn't implemented by the backend yet (see
+            # run_event's not_handled check) - no pickup is actually
+            # planned, so don't claim one is.
+            farmer_note = "Preview only: harvest intake is not connected in this demo.";
+        }
     }
 
     # ---------- view ----------
@@ -585,11 +594,11 @@ def:pub app -> JsxElement {
                           <div style={{"marginTop": "14px" if len(steps) > 0 else "0", "padding": "14px 16px", "borderRadius": "12px", "backgroundColor": C["surface2"] if event_report["source"] == "live" else C["amberSoft"], "border": "1px solid " + (C["border"] if event_report["source"] == "live" else C["amber"])}}>
                             <div style={{"display": "flex", "justifyContent": "space-between", "gap": "8px", "flexWrap": "wrap", "alignItems": "center"}}>
                               <strong style={{"fontSize": "14px"}}>{event_report["title"]}</strong>
-                              <span style={{"fontSize": "12px", "fontWeight": "700", "color": C["primaryDark"] if event_report["source"] == "live" else C["amber"]}}>{"LIVE ENGINE" if event_report["source"] == "live" else "SIMULATED REPORT"}</span>
+                              <span style={{"fontSize": "12px", "fontWeight": "700", "color": C["primaryDark"] if event_report["source"] == "live" else C["amber"]}}>{"LIVE ENGINE" if event_report["source"] == "live" else "NOT CONNECTED YET"}</span>
                             </div>
                             {for note in (event_report["notes"] as list[str]) { <p key={note} style={{"margin": "8px 0 0", "fontSize": "13px", "color": C["muted"]}}>{note}</p> }}
                             <p style={{"margin": "8px 0 0", "fontSize": "14px"}}>{event_report["explanation"]}</p>
-                            {if event_report["source"] != "live" { <p style={{"margin": "8px 0 0", "fontSize": "12px", "color": C["amber"]}}>The backend's event engine isn't connected yet, so this is a placeholder report. The dashboard numbers above are unchanged and still come from the live backend.</p> }}
+                            {if event_report["source"] != "live" { <p style={{"margin": "8px 0 0", "fontSize": "12px", "color": C["amber"]}}>This event type isn't implemented in the backend yet, so nothing was changed. The routes, fleet and scores above are exactly as they were.</p> }}
                           </div>
                         }}
                       </div>
@@ -600,7 +609,7 @@ def:pub app -> JsxElement {
                       <div style={{"padding": "6px 22px 10px"}}>
                         {for tk in trucks {
                           tkid = tk["id"] as str;
-                          is_broken = (tkid == broken_truck_id) or (tk["status"] as str == "broken");
+                          is_broken = tk["status"] as str == "broken";
                           <div key={tkid} style={{"display": "flex", "justifyContent": "space-between", "alignItems": "center", "padding": "10px 0", "borderBottom": "1px solid " + C["border"], "gap": "10px"}}>
                             <span style={{"display": "inline-flex", "alignItems": "center", "gap": "8px"}}><span style={{"width": "10px", "height": "10px", "borderRadius": "3px", "backgroundColor": truck_color_by_id[tkid], "display": "inline-block"}}></span>{tk["name"]}<span style={{"fontSize": "12px", "color": C["subtle"]}}>{fmt_int(tk["capacityKg"] as float)} kg · {fmt_int(tk["costPerKm"] as float)} LKR/km</span></span>
                             <span style={{"fontSize": "12px", "fontWeight": "600", "padding": "3px 10px", "borderRadius": "999px", "color": C["red"] if is_broken else C["primaryDark"], "backgroundColor": C["redSoft"] if is_broken else C["primarySoft"]}}>{"broken down" if is_broken else "available"}</span>
@@ -645,7 +654,7 @@ def:pub app -> JsxElement {
                               <div style={{"display": "flex", "gap": "8px", "alignItems": "center", "flexWrap": "wrap"}}>
                                 <strong style={{"fontSize": "14px"}}>{msg["farmerName"]}</strong>
                                 <span style={{"fontSize": "11px", "fontWeight": "700", "color": C["subtle"], "letterSpacing": "0.04em"}}>{(msg["language"] as str).upper()}</span>
-                                <span style={{"fontSize": "11px", "fontWeight": "600", "padding": "2px 8px", "borderRadius": "999px", "color": C["amber"] if (msg["isFallback"] or messages_source == "simulated") else C["blue"], "backgroundColor": C["amberSoft"] if (msg["isFallback"] or messages_source == "simulated") else C["blueSoft"]}}>{"sample message (simulated)" if messages_source == "simulated" else ("template fallback" if msg["isFallback"] else "AI-written")}</span>
+                                {if msg["isFallback"] { <span style={{"fontSize": "11px", "fontWeight": "600", "padding": "2px 8px", "borderRadius": "999px", "color": C["subtle"], "backgroundColor": C["surface2"]}}>Template message</span> }}
                               </div>
                               <div style={{"marginTop": "3px", "fontSize": "15px"}}>{msg["text"]}</div>
                             </div>
@@ -727,7 +736,10 @@ def:pub app -> JsxElement {
                         <div style={{"padding": "20px 22px"}}>
                           <div style={small_label}>{t["messages"]}</div>
                           {for msg in my_messages {
-                            <div key={(msg["farmerId"] as str) + (msg["language"] as str)} style={{"marginTop": "12px", "padding": "14px 16px", "backgroundColor": C["surface2"], "border": "1px solid " + C["border"], "borderRadius": "12px", "fontSize": "17px"}}>{msg["text"]}</div>
+                            <div key={(msg["farmerId"] as str) + (msg["language"] as str)} style={{"marginTop": "12px", "padding": "14px 16px", "backgroundColor": C["surface2"], "border": "1px solid " + C["border"], "borderRadius": "12px", "fontSize": "17px"}}>
+                              {if msg["isFallback"] { <div style={{"marginBottom": "6px"}}><span style={{"fontSize": "11px", "fontWeight": "600", "padding": "2px 8px", "borderRadius": "999px", "color": C["subtle"], "backgroundColor": C["surface"]}}>Template message</span></div> }}
+                              {msg["text"]}
+                            </div>
                           }}
                           {if len(my_messages) == 0 { <p style={{"margin": "10px 0 0", "color": C["muted"], "fontSize": "16px"}}>{t["none"]}</p> }}
                         </div>
