@@ -1,8 +1,11 @@
 """agriPulse - Shape tests for api.jac contract endpoints (owner: A).
 
-load_seed() and baseline_plan() are real now (build/read the actual graph
-from data.jac's 12-farmer seed); merge_routes()/replan_on_event() are
-still STUB and keep asserting on the fixed placeholder seed.
+load_seed(), baseline_plan() and merge_routes() are real (build/read the
+actual graph from data.jac's 12-farmer seed). replan_on_event() is real
+for "truck_breakdown"; every other event type is still a documented no-op
+(see logic.jac). logic.pick_replacement_truck() is a deliberate stub, so
+tests needing a real truck reassignment are EXPECTED TO FAIL until it's
+implemented - do not "fix" it here.
 
 These tests share `root` with every other test file (jac-testing: parallel
 workers, persisted graph) - run with JAC_TEST_JOBS=0 for a clean run, since
@@ -216,7 +219,11 @@ test "merge_routes is deterministic: calling it twice gives identical results" {
 }
 
 test "replan_on_event matches contract shape" {
-    event = Event(type="truck_breakdown", truckId="t1");
+    load_seed();
+    merged = merge_routes();
+    truck_id = merged.state.routes[0].truckId;
+
+    event = Event(type="truck_breakdown", truckId=truck_id);
     result = replan_on_event(event);
     assert isinstance(result, ReplanResult);
 
@@ -224,29 +231,67 @@ test "replan_on_event matches contract shape" {
     assert isinstance(result.diff.removedRouteIds, list);
     assert isinstance(result.diff.addedRouteIds, list);
     assert isinstance(result.diff.reassigned, list);
-    reassignment = result.diff.reassigned[0];
-    assert isinstance(reassignment.routeId, str);
-    assert isinstance(reassignment.fromTruckId, str);
-    assert isinstance(reassignment.toTruckId, str);
     assert isinstance(result.diff.notes, str);
 
     assert isinstance(result.state, State);
     assert isinstance(result.score, Score);
+    assert isinstance(result.score.agent.spoilagePct, float);
+    assert 0.0 <= result.score.agent.spoilagePct <= 100.0;
     assert isinstance(result.explanation, str);
 
-    assert len(result.messages) == 1;
-    message = result.messages[0];
-    assert isinstance(message.farmerId, str);
-    assert isinstance(message.farmerName, str);
-    assert isinstance(message.language, str);
-    assert isinstance(message.text, str);
-    assert message.isFallback == True;
+    assert isinstance(result.messages, list);
+    for message in result.messages {
+        assert isinstance(message.farmerId, str);
+        assert isinstance(message.farmerName, str);
+        assert isinstance(message.language, str);
+        assert isinstance(message.text, str);
+        assert message.isFallback;
+    }
+    for plan in result.state.plans {
+        assert 0.0 <= plan.expectedSpoilagePct <= 100.0;
+    }
+}
+
+test "replan_on_event: truck_breakdown with an unknown truckId is a no-op with a note" {
+    load_seed();
+    event = Event(type="truck_breakdown", truckId="no-such-truck");
+    result = replan_on_event(event);
+    assert isinstance(result, ReplanResult);
+    assert result.diff.removedRouteIds == [];
+    assert result.diff.addedRouteIds == [];
+    assert result.diff.reassigned == [];
+    assert "no-such-truck" in result.diff.notes;
 }
 
 test "replan_on_event accepts an event with only its type set" {
+    load_seed();
     event = Event(type="price_crash");
     result = replan_on_event(event);
     assert isinstance(result, ReplanResult);
     assert event.truckId == None;
     assert event.marketId == None;
+    assert result.diff.notes == "Event type price_crash is not handled yet";
+}
+
+test "replan_on_event: the same truck_breakdown event twice gives identical results" {
+    load_seed();
+    merged = merge_routes();
+    truck_id = merged.state.routes[0].truckId;
+
+    event = Event(type="truck_breakdown", truckId=truck_id);
+    first = replan_on_event(event);
+    second = replan_on_event(event);
+
+    assert sorted(first.diff.removedRouteIds) == sorted(second.diff.removedRouteIds);
+    assert sorted(first.diff.addedRouteIds) == sorted(second.diff.addedRouteIds);
+    assert first.diff.notes == second.diff.notes;
+    assert abs(first.score.agent.spoilagePct - second.score.agent.spoilagePct) < 1e-6;
+
+    broken = [t for t in second.state.trucks if t.id == truck_id][0];
+    assert broken.status == "broken";
+
+    # load_seed() rebuilds Truck nodes from scratch (new ids too), so it
+    # resets every truck's status rather than reviving this specific id.
+    reloaded = load_seed();
+    assert len([t for t in reloaded.state.trucks if t.status == "broken"]) == 0;
 }

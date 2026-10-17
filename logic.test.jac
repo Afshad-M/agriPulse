@@ -1,10 +1,12 @@
 """agriPulse - Smoke tests for logic.jac (owner: A).
 
-score_route and ReplanOnEvent are still stubs - those assertions are
-placeholders. score_cargo, compute_baseline and run_merge_routes are real;
-pick_best_merge is a deliberate stub (see its TODO in logic.jac), so the
-tests that need a real merge choice are EXPECTED TO FAIL until it's
-implemented - do not "fix" pick_best_merge here to make them pass.
+score_route is still a stub - that assertion is a placeholder. score_cargo,
+compute_baseline, run_merge_routes, pick_best_merge and
+apply_replan_event()'s truck_breakdown handling are real.
+pick_replacement_truck is a deliberate stub (see its TODO in logic.jac), so
+the tests that need a real replacement-truck choice are EXPECTED TO FAIL
+until it's implemented - do not "fix" pick_replacement_truck here to make
+them pass.
 
 Every test that touches the graph builds its own tiny fixture and filters
 results by its own node identities (jid) rather than asserting on the
@@ -178,9 +180,200 @@ test "the 5-farmer 880kg scenario merges onto one 1000kg truck" {
     }
 }
 
-test "replan on event walker runs without error" {
-    result = root spawn ReplanOnEvent(reason="route closed");
-    assert result.reports == [];
+#   ---- pick_replacement_truck (stub - see its TODO in logic.jac) ----
+#
+# "None for empty list" and "None when every truck is too small" pass right
+# now because the stub always returns None - they're real negative-case
+# pins, not placeholders. "picks the smallest truck that fits" and "equal
+# capacities pick the lowest id" need the real body and are EXPECTED TO
+# FAIL until it's written - do not "fix" pick_replacement_truck here.
+
+test "pick_replacement_truck: empty list returns None" {
+    assert pick_replacement_truck(100.0, []) == None;
+}
+
+test "pick_replacement_truck: every truck too small returns None" {
+    free = [
+        TruckInfo(id="t1", name="Small A", capacityKg=50.0, costPerKm=1.0, status="available"),
+        TruckInfo(id="t2", name="Small B", capacityKg=80.0, costPerKm=1.0, status="available"),
+    ];
+    assert pick_replacement_truck(100.0, free) == None;
+}
+
+test "pick_replacement_truck: picks the smallest truck that fits" {
+    free = [
+        TruckInfo(id="big", name="Big", capacityKg=2000.0, costPerKm=1.0, status="available"),
+        TruckInfo(id="fit", name="Fit", capacityKg=500.0, costPerKm=1.0, status="available"),
+        TruckInfo(id="small", name="Small", capacityKg=100.0, costPerKm=1.0, status="available"),
+    ];
+    assert pick_replacement_truck(400.0, free) == "fit";
+}
+
+test "pick_replacement_truck: equal capacities tie-break on the lowest id" {
+    free = [
+        TruckInfo(id="t2", name="B", capacityKg=500.0, costPerKm=1.0, status="available"),
+        TruckInfo(id="t1", name="A", capacityKg=500.0, costPerKm=1.0, status="available"),
+    ];
+    assert pick_replacement_truck(400.0, free) == "t1";
+}
+
+#   ---- apply_replan_event / truck_breakdown -------------------------
+#
+# Each test builds its own tiny fixture under root and cleans it up, per
+# jac-testing's guidance - run_merge_routes()/apply_truck_breakdown_event()
+# both read the WHOLE graph under root, so these fixtures must not rely on
+# any other test's nodes still being there, and must remove their own nodes
+# (Plan nodes from run_merge_routes() included) when done.
+
+def _cleanup_plans() -> None {
+    for p in [root -->][?:Plan] {
+        del p;
+    }
+}
+
+test "apply_replan_event: unknown event type is a documented no-op" {
+    outcome = apply_replan_event("road_closed");
+    assert outcome.diff.removedRouteIds == [];
+    assert outcome.diff.addedRouteIds == [];
+    assert outcome.diff.reassigned == [];
+    assert outcome.diff.notes == "Event type road_closed is not handled yet";
+
+    outcome2 = apply_replan_event("totally_bogus_type");
+    assert outcome2.diff.removedRouteIds == [];
+    assert outcome2.diff.notes == "Event type totally_bogus_type is not handled yet";
+}
+
+test "apply_replan_event: truck_breakdown with an unknown truckId never crashes" {
+    outcome = apply_replan_event("truck_breakdown", "no-such-truck-id");
+    assert outcome.diff.removedRouteIds == [];
+    assert outcome.diff.addedRouteIds == [];
+    assert outcome.diff.reassigned == [];
+    assert "no-such-truck-id" in outcome.diff.notes;
+
+    outcome2 = apply_replan_event("truck_breakdown", None);
+    assert outcome2.diff.removedRouteIds == [];
+}
+
+test "truck_breakdown with no spare truck or route: route removed, farmers unserved, no crash" {
+    hub = Hub(name="Breakdown Hub", capacity_kg=9999.0);
+    market = Market(name="Breakdown Market", demand_kg=9999.0, prices={"tomato": 100.0});
+    lone_truck = Truck(plate="LONE-TRUCK", capacity_kg=200.0, cost_per_km=10.0);
+    farmer = Farmer(name="Breakdown Farmer");
+    harvest = Harvest(crop="tomato", quantity_kg=150.0, shelf_life_hours=48.0);
+
+    root ++> hub;
+    root ++> market;
+    root ++> lone_truck;
+    root ++> farmer;
+    root ++> harvest;
+    hub +>:HubMarketRoute(distance_km=5.0, hours=0.2, open=True):+> market;
+    farmer +>:DeliversTo():+> hub;
+
+    truck_id = jid(lone_truck);
+    farmer_id = jid(farmer);
+
+    outcome = apply_replan_event("truck_breakdown", truck_id);
+
+    assert lone_truck.status == "broken";
+    assert len(outcome.diff.removedRouteIds) >= 1;
+    assert outcome.diff.addedRouteIds == [];
+    assert outcome.diff.reassigned == [];
+    assert farmer_id in outcome.diff.notes;
+    assert "unserved" in outcome.diff.notes;
+    assert len(outcome.messages) == 1;
+    message = outcome.messages[0];
+    assert message.farmerId == farmer_id;
+    assert message.isFallback == True;
+
+    # no surviving route should still point at the broken truck
+    for p in [root -->][?:Plan] {
+        assert p.truck_id != truck_id;
+    }
+
+    _cleanup_plans();
+    del [edge farmer ->:DeliversTo:-> hub];
+    del [edge hub ->:HubMarketRoute:-> market];
+    del hub; del market; del lone_truck; del farmer; del harvest;
+}
+
+test "truck_breakdown: calling the same event twice gives identical results" {
+    hub = Hub(name="Idempotent Hub", capacity_kg=9999.0);
+    market = Market(name="Idempotent Market", demand_kg=9999.0, prices={"tomato": 100.0});
+    lone_truck = Truck(plate="IDEMP-TRUCK", capacity_kg=200.0, cost_per_km=10.0);
+    farmer = Farmer(name="Idempotent Farmer");
+    harvest = Harvest(crop="tomato", quantity_kg=150.0, shelf_life_hours=48.0);
+
+    root ++> hub;
+    root ++> market;
+    root ++> lone_truck;
+    root ++> farmer;
+    root ++> harvest;
+    hub +>:HubMarketRoute(distance_km=5.0, hours=0.2, open=True):+> market;
+    farmer +>:DeliversTo():+> hub;
+
+    truck_id = jid(lone_truck);
+
+    first = apply_replan_event("truck_breakdown", truck_id);
+    second = apply_replan_event("truck_breakdown", truck_id);
+
+    assert sorted(first.diff.removedRouteIds) == sorted(second.diff.removedRouteIds);
+    assert sorted(first.diff.addedRouteIds) == sorted(second.diff.addedRouteIds);
+    assert first.diff.notes == second.diff.notes;
+    assert lone_truck.status == "broken";
+
+    _cleanup_plans();
+    del [edge farmer ->:DeliversTo:-> hub];
+    del [edge hub ->:HubMarketRoute:-> market];
+    del hub; del market; del lone_truck; del farmer; del harvest;
+}
+
+test "truck_breakdown on a merged route: reassigns to the spare truck" {
+    # Mirrors the 5-farmer 880kg demo scenario: two farmers merge onto the
+    # smallest fitting truck, which then breaks down with a bigger spare
+    # truck free. pick_replacement_truck picks that spare, so this reassigns
+    # (>=1 removed, >=1 added, >=1 reassigned record) instead of falling
+    # back to "unserved".
+    hub = Hub(name="Reassign Hub", capacity_kg=9999.0);
+    market = Market(name="Reassign Market", demand_kg=9999.0, prices={"tomato": 100.0});
+    small_truck = Truck(plate="REASSIGN-SMALL", capacity_kg=500.0, cost_per_km=10.0);
+    spare_truck = Truck(plate="REASSIGN-SPARE", capacity_kg=2000.0, cost_per_km=20.0);
+    farmer_a = Farmer(name="Reassign Farmer A");
+    farmer_b = Farmer(name="Reassign Farmer B");
+    harvest_a = Harvest(crop="tomato", quantity_kg=200.0, shelf_life_hours=72.0);
+    harvest_b = Harvest(crop="tomato", quantity_kg=150.0, shelf_life_hours=72.0);
+
+    root ++> hub;
+    root ++> market;
+    root ++> small_truck;
+    root ++> spare_truck;
+    root ++> farmer_a;
+    root ++> farmer_b;
+    root ++> harvest_a;
+    root ++> harvest_b;
+    hub +>:HubMarketRoute(distance_km=5.0, hours=0.2, open=True):+> market;
+    farmer_a +>:DeliversTo():+> hub;
+    farmer_b +>:DeliversTo():+> hub;
+
+    outcome = apply_replan_event("truck_breakdown", jid(small_truck));
+
+    assert len(outcome.diff.removedRouteIds) >= 1;
+    assert len(outcome.diff.addedRouteIds) >= 1;
+    assert len(outcome.diff.reassigned) >= 1;
+    assert "No farmers are unserved." in outcome.diff.notes;
+
+    # structural check: both farmers got the "reassigned" template, not
+    # the "unserved" one - no farmer id was dropped into an unserved list.
+    assert len(outcome.messages) == 2;
+    for m in outcome.messages {
+        assert m.text == BREAKDOWN_MESSAGE_TEMPLATES["en:reassigned"];
+    }
+
+    _cleanup_plans();
+    del [edge farmer_a ->:DeliversTo:-> hub];
+    del [edge farmer_b ->:DeliversTo:-> hub];
+    del [edge hub ->:HubMarketRoute:-> market];
+    del hub; del market; del small_truck; del spare_truck;
+    del farmer_a; del farmer_b; del harvest_a; del harvest_b;
 }
 
 # score_cargo: pins the spoilage/revenue/value formula (now implemented).

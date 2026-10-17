@@ -2,9 +2,11 @@
 
 Scoring, baseline assignment, route merging, and replanning. This is plain
 deterministic code - it never delegates a numeric computation to an LLM
-(see CLAUDE.md and llm.jac). compute_baseline() and run_merge_routes() are
-real; pick_best_merge() is a deliberate stub (see its TODO); score_route
-and replan are still stubs until that work lands.
+(see CLAUDE.md and llm.jac). compute_baseline(), run_merge_routes() and
+apply_replan_event()'s "truck_breakdown" handling are real; pick_best_merge()
+is implemented too. pick_replacement_truck() is a deliberate stub (see its
+TODO); score_route and the other replan event types are still stubs until
+that work lands.
 """
 
 import from models { Farmer, Harvest, Hub, Market, Truck, Plan, DeliversTo, HubRoute, HubMarketRoute, Assignment }
@@ -341,6 +343,52 @@ def _merged_leg(hub_ids: list[str], market_id: str) -> MarketRoute | None {
     return MarketRoute(market=market, distance_km=total_distance, hours=total_hours);
 }
 
+# Shared by _try_merge() and the replan/truck-breakdown engine below: scores
+# a route (any farmer_ids + the leg they share + the truck carrying them)
+# under MERGED.waiting_hours. Pulled out so reassigning a route to a
+# replacement truck (same farmers/hubs/market, different truck) reuses the
+# exact same formula as merging two routes, rather than a hand-rolled copy.
+obj RouteScore {
+    has distance_km: float,
+        hours: float,
+        spoilage_pct: float,
+        expected_income: float,
+        truck_cost: float;
+}
+
+def _score_route_from_leg(
+    farmer_ids: list[str], leg: MarketRoute, truck: Truck, harvest_by_farmer: dict[str, Harvest],
+) -> RouteScore {
+    elapsed = MERGED.waiting_hours + leg.hours;
+    total_income = 0.0;
+    total_kg = 0.0;
+    spoiled_kg = 0.0;
+    for fid in farmer_ids {
+        harvest = harvest_by_farmer[fid];
+        price = leg.market.prices.get(harvest.crop, 0.0);
+        score = score_cargo(harvest.quantity_kg, price, elapsed, harvest.shelf_life_hours, 0.0);
+        total_income += score.revenue;
+        total_kg += harvest.quantity_kg;
+        spoiled_kg += harvest.quantity_kg * score.loss;
+    }
+    spoilage_pct = (spoiled_kg / total_kg * 100.0) if total_kg > 0.0 else 0.0;
+    truck_cost = truck.cost_per_km * leg.distance_km;
+    return RouteScore(
+        distance_km=leg.distance_km, hours=leg.hours, spoilage_pct=spoilage_pct,
+        expected_income=total_income, truck_cost=truck_cost,
+    );
+}
+
+def _dedupe(ids: list[str]) -> list[str] {
+    out: list[str] = [];
+    for i in ids {
+        if i not in out {
+            out.append(i);
+        }
+    }
+    return out;
+}
+
 # Builds (and scores) the merged route candidate for A+B, or None if no
 # truck fits the combined kg or no path connects the union of hubs to the
 # shared market. `route_id` is a placeholder during candidate-scoring
@@ -363,39 +411,19 @@ def _try_merge(
         return None;
     }
 
-    elapsed = MERGED.waiting_hours + leg.hours;
-    total_income = 0.0;
-    total_kg = 0.0;
-    spoiled_kg = 0.0;
-    for fid in combined_farmer_ids {
-        harvest = harvest_by_farmer[fid];
-        price = leg.market.prices.get(harvest.crop, 0.0);
-        score = score_cargo(harvest.quantity_kg, price, elapsed, harvest.shelf_life_hours, 0.0);
-        total_income += score.revenue;
-        total_kg += harvest.quantity_kg;
-        spoiled_kg += harvest.quantity_kg * score.loss;
-    }
-    spoilage_pct = (spoiled_kg / total_kg * 100.0) if total_kg > 0.0 else 0.0;
-    truck_cost = truck.cost_per_km * leg.distance_km;
-
-    unique_hub_ids: list[str] = [];
-    for h in combined_hub_ids {
-        if h not in unique_hub_ids {
-            unique_hub_ids.append(h);
-        }
-    }
+    score = _score_route_from_leg(combined_farmer_ids, leg, truck, harvest_by_farmer);
 
     return BaselineRoute(
         id=route_id,
         truck_id=jid(truck),
         farmer_ids=combined_farmer_ids,
-        hub_ids=unique_hub_ids,
+        hub_ids=_dedupe(combined_hub_ids),
         market_id=a.market_id,
-        distance_km=leg.distance_km,
-        hours=leg.hours,
-        spoilage_pct=spoilage_pct,
-        expected_income=total_income,
-        truck_cost=truck_cost,
+        distance_km=score.distance_km,
+        hours=score.hours,
+        spoilage_pct=score.spoilage_pct,
+        expected_income=score.expected_income,
+        truck_cost=score.truck_cost,
     );
 }
 
@@ -518,13 +546,382 @@ def run_merge_routes() -> list[MergeStepRecord] {
     return steps;
 }
 
-walker ReplanOnEvent {
-    """Recompute the plan after a disruption event (e.g. a closed route)."""
-    has reason: str = "",
-        reports: list[Plan] = [];
+# ---- Replan engine (owner: A) -----------------------------------------
+# apply_replan_event() handles disruption events deterministically, the
+# same function/no-visit shape as run_merge_routes() above (no walker - see
+# its comment). Only "truck_breakdown" is handled for real this round; every
+# other type (including unknown ones) is a documented no-op. See
+# docs/assumptions.md for the full rules (x1/x2 ids, fallback order,
+# "a truck serves one route at a time").
+#
+# The wire Event/Diff/Reassignment/Message types live in api.jac (CONTRACT
+# v1), so this module mirrors them field-for-field under its own names -
+# same reason MergeStepRecord mirrors MergeStep above: api.jac already
+# imports from logic.jac, so logic.jac importing back from api.jac would be
+# circular. api.jac's replan_on_event() converts 1:1.
 
-    can run with Root entry {
-        # TODO(A): recompute plan after self.reason disrupts the graph.
-        skip;
+obj TruckInfo {
+    has id: str,
+        name: str,
+        capacityKg: float,
+        costPerKm: float,
+        status: str;
+}
+
+obj ReassignmentRecord {
+    has routeId: str,
+        fromTruckId: str,
+        toTruckId: str;
+}
+
+obj DiffRecord {
+    has removedRouteIds: list[str],
+        addedRouteIds: list[str],
+        reassigned: list[ReassignmentRecord],
+        notes: str;
+}
+
+obj MessageRecord {
+    has farmerId: str,
+        farmerName: str,
+        language: str,
+        text: str,
+        isFallback: bool = True;
+}
+
+obj ReplanOutcome {
+    has diff: DiffRecord,
+        explanation: str,
+        messages: list[MessageRecord];
+}
+
+# TODO(user): return the smallest-capacityKg truck in `free_trucks` whose
+# capacityKg is at least route_kg; on an exact capacity tie, the one with
+# the lowest id. None if `free_trucks` is empty or nothing in it fits.
+# Deliberately left as a stub - see docs/assumptions.md and CLAUDE.md
+# (the agent/LLM never computes this kind of number; a human does).
+
+
+def pick_replacement_truck(route_kg: float, free_trucks: list[TruckInfo]) -> str | None {
+    best: TruckInfo | None = None;
+    for t in free_trucks {
+        if t.capacityKg < route_kg {
+            continue;
+        }
+        if best is None {
+            best = t;
+        } elif t.capacityKg < best.capacityKg {
+            best = t;
+        } elif t.capacityKg == best.capacityKg and t.id < best.id {
+            best = t;
+        }
     }
+    if best is None {
+        return None;
+    }
+    return best.id;
+}
+
+def _all_trucks() -> list[Truck] {
+    return [root -->][?:Truck];
+}
+
+def _truck_info(t: Truck) -> TruckInfo {
+    return TruckInfo(id=jid(t), name=t.plate, capacityKg=t.capacity_kg, costPerKm=t.cost_per_km, status=t.status);
+}
+
+def _route_id_key(r: BaselineRoute) -> str {
+    return r.id;
+}
+
+def _farmer_name(fid: str) -> str {
+    f = jobj(fid);
+    if f is not None and isinstance(f, Farmer) {
+        return f.name;
+    }
+    return fid;
+}
+
+def _farmer_language(fid: str) -> str {
+    f = jobj(fid);
+    if f is not None and isinstance(f, Farmer) {
+        return f.language;
+    }
+    return "en";
+}
+
+# Reads the Plan nodes run_merge_routes() just persisted back into the
+# BaselineRoute shape, so the replan engine can keep operating on the same
+# type merge/baseline already use.
+def _routes_from_plans() -> list[BaselineRoute] {
+    plans = [root -->][?:Plan];
+    return [
+        BaselineRoute(
+            id=p.route_id, truck_id=p.truck_id, farmer_ids=p.farmer_ids, hub_ids=p.hub_ids,
+            market_id=p.market_id, distance_km=p.distance_km, hours=p.hours,
+            spoilage_pct=p.spoilage_pct, expected_income=p.expected_income, truck_cost=p.truck_cost,
+        )
+        for p in plans
+    ];
+}
+
+# kg-weighted spoilagePct (0-100) across a list of routes - same shape as
+# api.jac's _aggregate_score_from_routes, but over BaselineRoute directly
+# (no RouteInfo/PlanInfo round-trip needed inside logic.jac).
+def _kg_weighted_spoilage(routes: list[BaselineRoute], harvest_by_farmer: dict[str, Harvest]) -> float {
+    total_kg = 0.0;
+    spoiled_kg = 0.0;
+    for r in routes {
+        kg = _route_kg(r, harvest_by_farmer);
+        total_kg += kg;
+        spoiled_kg += kg * (r.spoilage_pct / 100.0);
+    }
+    return (spoiled_kg / total_kg * 100.0) if total_kg > 0.0 else 0.0;
+}
+
+# Fallback for a route whose truck broke down with no free replacement:
+# try to fold its farmers onto another CURRENT route (sorted by id, first
+# fit wins) that already shares its marketId and whose existing truck has
+# spare capacity_kg for the combined load. Unlike pick_replacement_truck,
+# this never swaps the target's truck - "a truck serves one route at a
+# time" (docs/assumptions.md), so the target keeps its own truck_id/id and
+# just carries more farmers. None if no such route exists.
+def _try_attach_to_existing_route(
+    orphan: BaselineRoute, candidates: list[BaselineRoute], trucks_by_id: dict[str, Truck],
+    harvest_by_farmer: dict[str, Harvest],
+) -> BaselineRoute | None {
+    for target in sorted(candidates, key=_route_id_key) {
+        if target.market_id != orphan.market_id {
+            continue;
+        }
+        truck = trucks_by_id.get(target.truck_id);
+        if truck is None {
+            continue;
+        }
+        combined_kg = _route_kg(target, harvest_by_farmer) + _route_kg(orphan, harvest_by_farmer);
+        if combined_kg > truck.capacity_kg {
+            continue;
+        }
+        combined_hub_ids = _dedupe(target.hub_ids + orphan.hub_ids);
+        leg = _merged_leg(combined_hub_ids, target.market_id);
+        if leg is None {
+            continue;
+        }
+        combined_farmer_ids = target.farmer_ids + orphan.farmer_ids;
+        score = _score_route_from_leg(combined_farmer_ids, leg, truck, harvest_by_farmer);
+        return BaselineRoute(
+            id=target.id, truck_id=target.truck_id, farmer_ids=combined_farmer_ids, hub_ids=combined_hub_ids,
+            market_id=target.market_id, distance_km=score.distance_km, hours=score.hours,
+            spoilage_pct=score.spoilage_pct, expected_income=score.expected_income, truck_cost=score.truck_cost,
+        );
+    }
+    return None;
+}
+
+# Deterministic per-language, per-outcome farmer notification templates -
+# the fallback this block always uses (isFallback=True); a later block
+# swaps these for llm.farmer_message(). Sinhala/Tamil text is machine-
+# drafted, same caveat as llm.jac's FARMER_MESSAGE_FALLBACKS: please have a
+# native speaker sanity-check before the demo.
+glob BREAKDOWN_MESSAGE_TEMPLATES: dict[str, str] = {
+    "en:reassigned": "Your harvest pickup is still happening - a replacement truck will collect it as planned.",
+    "en:attached": "Your harvest pickup is still happening - it will now travel together with another route.",
+    "en:unserved": "We're sorry - a truck breakdown means we could not arrange pickup for your harvest right now. We will follow up with next steps.",
+    "si:reassigned": "ට්‍රක් රථය කැඩී ගිය නිසා ඔබේ අස්වැන්න රැගෙන යාමට වෙනත් ට්‍රක් රථයක් යොදවා ඇත.",
+    "si:attached": "ට්‍රක් රථය කැඩී ගිය නිසා ඔබේ අස්වැන්න දැන් තවත් මගක් සමඟ ඒකාබද්ධ කර ඇත.",
+    "si:unserved": "කණගාටුයි, ට්‍රක් රථය කැඩී යාම නිසා ඔබේ අස්වැන්න දැනට රැගෙන යා නොහැක. කණ්ඩායම ඉක්මනින් සම්බන්ධ වනු ඇත.",
+    "ta:reassigned": "லாரி பழுதடைந்ததால் உங்கள் அறுவடையை சேகரிக்க வேறு லாரி ஏற்பாடு செய்யப்பட்டுள்ளது.",
+    "ta:attached": "லாரி பழுதடைந்ததால் உங்கள் அறுவடை இப்போது மற்றொரு பாதையுடன் இணைக்கப்பட்டுள்ளது.",
+    "ta:unserved": "வருந்துகிறோம், லாரி பழுதடைந்ததால் தற்போது உங்கள் அறுவடையை சேகரிக்க முடியவில்லை. குழு விரைவில் தொடர்பு கொள்ளும்.",
+};
+
+def _breakdown_message_text(language: str, outcome: str) -> str {
+    key = f"{language}:{outcome}";
+    if key in BREAKDOWN_MESSAGE_TEMPLATES {
+        return BREAKDOWN_MESSAGE_TEMPLATES[key];
+    }
+    return BREAKDOWN_MESSAGE_TEMPLATES[f"en:{outcome}"];
+}
+
+# truck_breakdown: always rebuilds the current plan from a fresh
+# run_merge_routes() first (so two calls with the same event are
+# identical regardless of what an earlier replan call did), marks the
+# truck broken, then resolves each route it was serving in sorted id
+# order: replacement truck (pick_replacement_truck) -> attach to another
+# route with spare capacity on the same market -> else drop the route and
+# report its farmers unserved. See docs/assumptions.md for the full
+# write-up.
+def apply_truck_breakdown_event(truck_id: str | None) -> ReplanOutcome {
+    if truck_id is None {
+        note = "Truck breakdown event is missing a truckId.";
+        return ReplanOutcome(
+            diff=DiffRecord(removedRouteIds=[], addedRouteIds=[], reassigned=[], notes=note),
+            explanation=note, messages=[],
+        );
+    }
+    try {
+        truck_obj = jobj(truck_id);
+    } except Exception {
+        # jobj() raises on a malformed id (e.g. not a UUID) rather than
+        # returning None - a truckId can be any client-supplied string, so
+        # this is a normal "not found", never a crash.
+        truck_obj = None;
+    }
+    if truck_obj is None or not isinstance(truck_obj, Truck) {
+        note = f"Truck {truck_id} does not exist.";
+        return ReplanOutcome(
+            diff=DiffRecord(removedRouteIds=[], addedRouteIds=[], reassigned=[], notes=note),
+            explanation=note, messages=[],
+        );
+    }
+
+    truck_obj.status = "broken";
+    run_merge_routes();
+    routes = _routes_from_plans();
+    harvest_by_farmer = _harvest_by_farmer_id();
+    all_trucks = _all_trucks();
+    trucks_by_id: dict[str, Truck] = {};
+    for t in all_trucks {
+        trucks_by_id[jid(t)] = t;
+    }
+
+    old_spoilage = _kg_weighted_spoilage(routes, harvest_by_farmer);
+    affected = sorted([r for r in routes if r.truck_id == truck_id], key=_route_id_key);
+
+    if len(affected) == 0 {
+        _persist_current_plan(routes);
+        note = f"Truck {truck_obj.plate} broke down but was not serving any route.";
+        return ReplanOutcome(
+            diff=DiffRecord(removedRouteIds=[], addedRouteIds=[], reassigned=[], notes=note),
+            explanation=note, messages=[],
+        );
+    }
+
+    used_truck_ids: set[str] = set();
+    for r in routes {
+        if r.truck_id != truck_id {
+            used_truck_ids.add(r.truck_id);
+        }
+    }
+
+    working_routes = [r for r in routes if r.truck_id != truck_id];
+    removed_ids: list[str] = [];
+    added_ids: list[str] = [];
+    reassigned: list[ReassignmentRecord] = [];
+    sentences: list[str] = [];
+    farmer_outcome: dict[str, str] = {};
+    unserved_farmer_count = 0;
+    x_counter = 0;
+
+    for route in affected {
+        removed_ids.append(route.id);
+        route_kg = _route_kg(route, harvest_by_farmer);
+        handled = False;
+
+        free_trucks = [_truck_info(t) for t in all_trucks if t.status != "broken" and jid(t) not in used_truck_ids];
+        new_truck_id = pick_replacement_truck(route_kg, free_trucks);
+        if new_truck_id is not None and new_truck_id in trucks_by_id {
+            new_truck = trucks_by_id[new_truck_id];
+            leg = _merged_leg(route.hub_ids, route.market_id);
+            if leg is not None {
+                score = _score_route_from_leg(route.farmer_ids, leg, new_truck, harvest_by_farmer);
+                x_counter += 1;
+                new_id = f"x{x_counter}";
+                working_routes.append(BaselineRoute(
+                    id=new_id, truck_id=new_truck_id, farmer_ids=route.farmer_ids, hub_ids=route.hub_ids,
+                    market_id=route.market_id, distance_km=score.distance_km, hours=score.hours,
+                    spoilage_pct=score.spoilage_pct, expected_income=score.expected_income, truck_cost=score.truck_cost,
+                ));
+                added_ids.append(new_id);
+                reassigned.append(ReassignmentRecord(routeId=new_id, fromTruckId=truck_id, toTruckId=new_truck_id));
+                used_truck_ids.add(new_truck_id);
+                sentences.append(
+                    f"Route {route.id} ({len(route.farmer_ids)} farmers, {route_kg:.0f} kg) moved to truck {new_truck.plate}."
+                );
+                for fid in route.farmer_ids {
+                    farmer_outcome[fid] = "reassigned";
+                }
+                handled = True;
+            }
+        }
+
+        if not handled {
+            target = _try_attach_to_existing_route(route, working_routes, trucks_by_id, harvest_by_farmer);
+            if target is not None {
+                working_routes = [target if r.id == target.id else r for r in working_routes];
+                sentences.append(
+                    f"Route {route.id} ({len(route.farmer_ids)} farmers, {route_kg:.0f} kg) attached to route {target.id}."
+                );
+                for fid in route.farmer_ids {
+                    farmer_outcome[fid] = "attached";
+                }
+                handled = True;
+            }
+        }
+
+        if not handled {
+            unserved_farmer_count += len(route.farmer_ids);
+            sentences.append(
+                f"Route {route.id} ({len(route.farmer_ids)} farmers, {route_kg:.0f} kg) removed - no spare truck "
+                + f"or route capacity for farmer(s) {', '.join(route.farmer_ids)}; they are unserved."
+            );
+            for fid in route.farmer_ids {
+                farmer_outcome[fid] = "unserved";
+            }
+        }
+    }
+
+    _persist_current_plan(working_routes);
+    new_spoilage = _kg_weighted_spoilage(working_routes, harvest_by_farmer);
+
+    if unserved_farmer_count == 0 {
+        sentences.append("No farmers are unserved.");
+    } else {
+        word = "farmer is" if unserved_farmer_count == 1 else "farmers are";
+        sentences.append(f"{unserved_farmer_count} {word} unserved.");
+    }
+
+    spoilage_delta = new_spoilage - old_spoilage;
+    if abs(spoilage_delta) < 1e-9 {
+        sentences.append("Spoilage stayed flat.");
+    } else {
+        direction = "rose" if spoilage_delta > 0.0 else "fell";
+        sentences.append(f"Spoilage {direction} by {abs(spoilage_delta):.1f} points.");
+    }
+
+    notes = " ".join(sentences);
+    explanation = f"Truck {truck_obj.plate} broke down. " + notes;
+
+    messages: list[MessageRecord] = [];
+    for route in affected {
+        for fid in route.farmer_ids {
+            outcome = farmer_outcome.get(fid, "unserved");
+            language = _farmer_language(fid);
+            messages.append(MessageRecord(
+                farmerId=fid, farmerName=_farmer_name(fid), language=language,
+                text=_breakdown_message_text(language, outcome), isFallback=True,
+            ));
+        }
+    }
+
+    return ReplanOutcome(
+        diff=DiffRecord(removedRouteIds=removed_ids, addedRouteIds=added_ids, reassigned=reassigned, notes=notes),
+        explanation=explanation, messages=messages,
+    );
+}
+
+# Top-level replan entry point - api.jac's replan_on_event() calls this
+# with the wire Event's plain fields (never the Event object itself, to
+# avoid importing api.jac's type back into logic.jac). Only type +
+# truckId are needed for "truck_breakdown"; the other event types are a
+# documented no-op until their own block lands.
+def apply_replan_event(event_type: str, truck_id: str | None = None) -> ReplanOutcome {
+    if event_type == "truck_breakdown" {
+        return apply_truck_breakdown_event(truck_id);
+    }
+    note = f"Event type {event_type} is not handled yet";
+    return ReplanOutcome(
+        diff=DiffRecord(removedRouteIds=[], addedRouteIds=[], reassigned=[], notes=note),
+        explanation=note, messages=[],
+    );
 }

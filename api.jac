@@ -12,9 +12,10 @@ fields may be added later but never renamed or removed. Money is LKR.
 load_seed(), baseline_plan() and merge_routes() are real: they build the
 graph from data.jac's SEED_* records (models.jac node/edge types) and
 compute from it (logic.jac.compute_baseline() / run_merge_routes()).
-merge_routes() depends on logic.pick_best_merge(), a deliberate stub -
-see its TODO in logic.jac. replan_on_event() is still STUB - unchanged,
-returning the fixed placeholder seed, until that work lands.
+replan_on_event() is real for the "truck_breakdown" event type (delegates
+to logic.apply_replan_event(), which depends on logic.pick_replacement_truck(),
+a deliberate stub - see its TODO in logic.jac); every other event type is
+still a documented no-op until its own block lands.
 """
 
 import from models { Farmer, Harvest, Hub, Market, Truck, Plan, DeliversTo, HubRoute, HubMarketRoute }
@@ -24,7 +25,7 @@ import from data {
     CROP_SHELF_LIFE_HOURS, SEED_FARMER_RECORDS, SEED_HUB_RECORDS,
     SEED_MARKET_RECORDS, SEED_TRUCK_RECORDS,
 }
-import from logic { compute_baseline, BaselineRoute, run_merge_routes }
+import from logic { compute_baseline, BaselineRoute, run_merge_routes, apply_replan_event }
 
 # ---- Contract data types -----------------------------------------------
 
@@ -298,7 +299,7 @@ def _real_state(routes: list[RouteInfo] = [], plans: list[PlanInfo] = []) -> Sta
         for m in markets
     ];
     truck_infos = [
-        TruckInfo(id=jid(t), name=t.plate, capacityKg=t.capacity_kg, costPerKm=t.cost_per_km, status="available")
+        TruckInfo(id=jid(t), name=t.plate, capacityKg=t.capacity_kg, costPerKm=t.cost_per_km, status=t.status)
         for t in trucks
     ];
 
@@ -327,92 +328,6 @@ def _aggregate_score(baseline_routes: list[BaselineRoute]) -> Score {
 
     baseline = ScoreSet(spoilagePct=spoilage_pct, income=total_income, truckCost=total_truck_cost);
     return Score(baseline=baseline, agent=baseline);
-}
-
-# ---- STUB placeholder seed ------------------------------------------------
-# Still used by merge_routes()/replan_on_event(), which are not real yet.
-
-def _placeholder_state() -> State {
-    farmers = [
-        FarmerInfo(id="f1", name="Kamal Perera", district="Kandy", language="si"),
-        FarmerInfo(id="f2", name="Nirmala Silva", district="Matale", language="si"),
-        FarmerInfo(id="f3", name="Suresh Kumar", district="Jaffna", language="ta"),
-    ];
-    harvests = [
-        HarvestInfo(id="h1", farmerId="f1", crop="Tomato", kg=500.0, readyHour=6.0, shelfLifeHours=48.0),
-        HarvestInfo(id="h2", farmerId="f2", crop="Banana", kg=300.0, readyHour=7.0, shelfLifeHours=72.0),
-        HarvestInfo(id="h3", farmerId="f3", crop="Rice", kg=800.0, readyHour=5.0, shelfLifeHours=240.0),
-    ];
-    hubs = [
-        HubInfo(id="hub1", name="Kandy Hub", district="Kandy"),
-        HubInfo(id="hub2", name="Matale Hub", district="Matale"),
-    ];
-    markets = [
-        MarketInfo(
-            id="mk1",
-            name="Dambulla Economic Centre",
-            prices={"Tomato": 120.0, "Banana": 80.0, "Rice": 150.0},
-            demandCapKg=2000.0,
-        ),
-    ];
-    trucks = [
-        TruckInfo(id="t1", name="Truck A", capacityKg=1000.0, costPerKm=45.0, status="available"),
-        TruckInfo(id="t2", name="Truck B", capacityKg=1500.0, costPerKm=60.0, status="available"),
-    ];
-    routes = [
-        RouteInfo(id="r1", truckId="t1", farmerIds=["f1"], hubIds=["hub1"], marketId="mk1", distanceKm=42.0, hours=1.1),
-        RouteInfo(id="r2", truckId="t1", farmerIds=["f2"], hubIds=["hub1"], marketId="mk1", distanceKm=38.0, hours=1.0),
-        RouteInfo(id="r3", truckId="t2", farmerIds=["f3"], hubIds=["hub2"], marketId="mk1", distanceKm=55.0, hours=1.4),
-        RouteInfo(id="r4", truckId="t1", farmerIds=["f1", "f2"], hubIds=["hub1"], marketId="mk1", distanceKm=40.0, hours=1.05),
-    ];
-    plans = [
-        PlanInfo(routeId="r1", expectedSpoilagePct=10.0, expectedIncome=55000.0, truckCost=1890.0),
-        PlanInfo(routeId="r2", expectedSpoilagePct=8.0, expectedIncome=22000.0, truckCost=1710.0),
-        PlanInfo(routeId="r3", expectedSpoilagePct=15.0, expectedIncome=100000.0, truckCost=3300.0),
-        PlanInfo(routeId="r4", expectedSpoilagePct=7.0, expectedIncome=76000.0, truckCost=1800.0),
-    ];
-    return State(
-        farmers=farmers, harvests=harvests, hubs=hubs, markets=markets,
-        trucks=trucks, routes=routes, plans=plans,
-    );
-}
-
-def _placeholder_score() -> Score {
-    return Score(
-        baseline=ScoreSet(spoilagePct=12.0, income=150000.0, truckCost=6000.0),
-        agent=ScoreSet(spoilagePct=9.0, income=153000.0, truckCost=5900.0),
-    );
-}
-
-def _placeholder_merge_steps() -> list[MergeStep] {
-    return [
-        MergeStep(
-            stepNo=1, mergedRouteIds=["r1", "r2"], newRouteId="r4",
-            reason="STUB: same hub and market, overlapping pickup window.",
-        ),
-        MergeStep(
-            stepNo=2, mergedRouteIds=["r3"], newRouteId="r3",
-            reason="STUB: kept solo - different hub, no compatible match.",
-        ),
-    ];
-}
-
-def _placeholder_diff() -> Diff {
-    return Diff(
-        removedRouteIds=["r3"],
-        addedRouteIds=["r5"],
-        reassigned=[Reassignment(routeId="r2", fromTruckId="t1", toTruckId="t2")],
-        notes="STUB: placeholder diff, not derived from the actual event yet.",
-    );
-}
-
-def _placeholder_messages() -> list[Message] {
-    return [
-        Message(
-            farmerId="f1", farmerName="Kamal Perera", language="si",
-            text="STUB: your harvest pickup is confirmed.", isFallback=True,
-        ),
-    ];
 }
 
 # ---- Endpoints ------------------------------------------------------------
@@ -540,12 +455,32 @@ def:pub merge_routes() -> MergeRoutesResult {
 }
 
 def:pub replan_on_event(event: Event) -> ReplanResult {
-    # STUB: ignores event's actual contents; spawn logic.ReplanOnEvent(event=event) once it lands.
+    outcome = apply_replan_event(event.type, event.truckId);
+
+    routes = _current_plan_route_infos();
+    plans = _current_plan_plan_infos();
+    baseline_score = _aggregate_score(compute_baseline()).baseline;
+    agent_score = _aggregate_score_from_routes(routes, plans);
+
+    diff = Diff(
+        removedRouteIds=outcome.diff.removedRouteIds,
+        addedRouteIds=outcome.diff.addedRouteIds,
+        reassigned=[
+            Reassignment(routeId=r.routeId, fromTruckId=r.fromTruckId, toTruckId=r.toTruckId)
+            for r in outcome.diff.reassigned
+        ],
+        notes=outcome.diff.notes,
+    );
+    messages = [
+        Message(farmerId=m.farmerId, farmerName=m.farmerName, language=m.language, text=m.text, isFallback=m.isFallback)
+        for m in outcome.messages
+    ];
+
     return ReplanResult(
-        diff=_placeholder_diff(),
-        state=_placeholder_state(),
-        score=_placeholder_score(),
-        explanation="STUB: explanation generation not implemented yet.",
-        messages=_placeholder_messages(),
+        diff=diff,
+        state=_real_state(routes=routes, plans=plans),
+        score=Score(baseline=baseline_score, agent=agent_score),
+        explanation=outcome.explanation,
+        messages=messages,
     );
 }
