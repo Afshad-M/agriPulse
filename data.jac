@@ -261,28 +261,29 @@ glob SEED_FARMER_HUB_RECORDS: list[dict[str, any]] = [
 ];
 
 # Same numbers as SEED_HUB_ROUTES/SEED_HUB_MARKET_ROUTES above, re-keyed by
-# id for RouteInfo.distanceKm/hours lookups.
+# id for RouteInfo.distanceKm/hours lookups. Each edge also carries its own
+# "id" so a road_closed event (Event.edgeId) can address it directly.
 glob SEED_HUB_ROUTE_RECORDS: list[dict[str, any]] = [
-    {"fromHubId": "hub1", "toHubId": "hub4", "distanceKm": 45.0, "hours": 1.2, "open": True},
-    {"fromHubId": "hub1", "toHubId": "hub3", "distanceKm": 72.0, "hours": 2.0, "open": True},
-    {"fromHubId": "hub3", "toHubId": "hub4", "distanceKm": 28.0, "hours": 0.8, "open": True},
-    {"fromHubId": "hub3", "toHubId": "hub2", "distanceKm": 77.0, "hours": 2.5, "open": True},
-    {"fromHubId": "hub4", "toHubId": "hub2", "distanceKm": 95.0, "hours": 3.0, "open": True}
+    {"id": "hub1-hub4", "fromHubId": "hub1", "toHubId": "hub4", "distanceKm": 45.0, "hours": 1.2, "open": True},
+    {"id": "hub1-hub3", "fromHubId": "hub1", "toHubId": "hub3", "distanceKm": 72.0, "hours": 2.0, "open": True},
+    {"id": "hub3-hub4", "fromHubId": "hub3", "toHubId": "hub4", "distanceKm": 28.0, "hours": 0.8, "open": True},
+    {"id": "hub3-hub2", "fromHubId": "hub3", "toHubId": "hub2", "distanceKm": 77.0, "hours": 2.5, "open": True},
+    {"id": "hub4-hub2", "fromHubId": "hub4", "toHubId": "hub2", "distanceKm": 95.0, "hours": 3.0, "open": True}
 ];
 
 glob SEED_HUB_MARKET_ROUTE_RECORDS: list[dict[str, any]] = [
-    {"hubId": "hub1", "marketId": "mk1", "distanceKm": 2.0,   "hours": 0.1,  "open": True},
-    {"hubId": "hub1", "marketId": "mk3", "distanceKm": 72.0,  "hours": 2.0,  "open": True},
-    {"hubId": "hub1", "marketId": "mk2", "distanceKm": 148.0, "hours": 3.5,  "open": True},
-    {"hubId": "hub2", "marketId": "mk3", "distanceKm": 77.0,  "hours": 2.5,  "open": True},
-    {"hubId": "hub2", "marketId": "mk2", "distanceKm": 180.0, "hours": 5.0,  "open": True},
-    {"hubId": "hub2", "marketId": "mk1", "distanceKm": 100.0, "hours": 3.0,  "open": True},
-    {"hubId": "hub3", "marketId": "mk3", "distanceKm": 3.0,   "hours": 0.15, "open": True},
-    {"hubId": "hub3", "marketId": "mk2", "distanceKm": 115.0, "hours": 3.0,  "open": True},
-    {"hubId": "hub3", "marketId": "mk1", "distanceKm": 72.0,  "hours": 2.0,  "open": True},
-    {"hubId": "hub4", "marketId": "mk1", "distanceKm": 45.0,  "hours": 1.2,  "open": True},
-    {"hubId": "hub4", "marketId": "mk3", "distanceKm": 28.0,  "hours": 0.8,  "open": True},
-    {"hubId": "hub4", "marketId": "mk2", "distanceKm": 140.0, "hours": 3.3,  "open": True}
+    {"id": "hub1-mk1", "hubId": "hub1", "marketId": "mk1", "distanceKm": 2.0,   "hours": 0.1,  "open": True},
+    {"id": "hub1-mk3", "hubId": "hub1", "marketId": "mk3", "distanceKm": 72.0,  "hours": 2.0,  "open": True},
+    {"id": "hub1-mk2", "hubId": "hub1", "marketId": "mk2", "distanceKm": 148.0, "hours": 3.5,  "open": True},
+    {"id": "hub2-mk3", "hubId": "hub2", "marketId": "mk3", "distanceKm": 77.0,  "hours": 2.5,  "open": True},
+    {"id": "hub2-mk2", "hubId": "hub2", "marketId": "mk2", "distanceKm": 180.0, "hours": 5.0,  "open": True},
+    {"id": "hub2-mk1", "hubId": "hub2", "marketId": "mk1", "distanceKm": 100.0, "hours": 3.0,  "open": True},
+    {"id": "hub3-mk3", "hubId": "hub3", "marketId": "mk3", "distanceKm": 3.0,   "hours": 0.15, "open": True},
+    {"id": "hub3-mk2", "hubId": "hub3", "marketId": "mk2", "distanceKm": 115.0, "hours": 3.0,  "open": True},
+    {"id": "hub3-mk1", "hubId": "hub3", "marketId": "mk1", "distanceKm": 72.0,  "hours": 2.0,  "open": True},
+    {"id": "hub4-mk1", "hubId": "hub4", "marketId": "mk1", "distanceKm": 45.0,  "hours": 1.2,  "open": True},
+    {"id": "hub4-mk3", "hubId": "hub4", "marketId": "mk3", "distanceKm": 28.0,  "hours": 0.8,  "open": True},
+    {"id": "hub4-mk2", "hubId": "hub4", "marketId": "mk2", "distanceKm": 140.0, "hours": 3.3,  "open": True}
 ];
 
 # id-based counterpart to DEMO_MERGE_SCENARIO/DEMO_BREAKDOWN_SCENARIO above -
@@ -298,4 +299,40 @@ glob DEMO_MERGE_SCENARIO_IDS: dict[str, any] = {
 glob DEMO_BREAKDOWN_EVENT: dict[str, any] = {
     "type": "truck_breakdown",
     "truckId": "t1"
+};
+
+# ---------------------------------------------------------------------------
+# The other three Event types from the contract (road_closed, price_crash,
+# new_harvest) - only truck_breakdown had a demo scenario before. All code
+# matches Event(type, truckId, edgeId, marketId, crop, text) exactly.
+# ---------------------------------------------------------------------------
+
+# Closes the exact edge the merge scenario planned to use (hub1 -> mk3),
+# so firing this right after a merge forces a real reroute - e.g. via
+# hub1-mk1 (2km, trivial) or hub1-hub3 -> hub3-mk3 through Kandy Hub.
+glob DEMO_ROAD_CLOSED_EVENT: dict[str, any] = {
+    "type": "road_closed",
+    "edgeId": "hub1-mk3",
+    "_description": "Dambulla Hub -> Kandy Market closed. Forces the merged 5-farmer tomato route off its planned path."
+};
+
+# Tomato price crashes at Kandy Market (mk3) - the same market the merge
+# scenario chose for its better price (200 vs 180 at Dambulla Economic
+# Centre), so this specifically undercuts why the merge picked it.
+glob DEMO_PRICE_CRASH_EVENT: dict[str, any] = {
+    "type": "price_crash",
+    "marketId": "mk3",
+    "crop": "tomato",
+    "_description": "Kandy Market tomato price crashes. Dambulla Economic Centre (180/kg) becomes the better destination."
+};
+# Not part of the Event contract itself (Event carries no price field) -
+# supplementary reference value if logic.jac wants a concrete new price
+# rather than just reacting to "this market/crop is no longer viable".
+glob DEMO_PRICE_CRASH_NEW_PRICE: float = 90.0;
+
+# Free-text input for parse_harvest() feeding a live new_harvest event -
+# a 13th farmer's harvest arriving after the initial load_seed().
+glob DEMO_NEW_HARVEST_EVENT: dict[str, any] = {
+    "type": "new_harvest",
+    "text": "Lasantha just harvested another 80kg of beans near Matale, ready in about 2 hours"
 };
