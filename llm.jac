@@ -24,15 +24,17 @@ rather than trusting the model blindly.
 obj HarvestDraft {
     has crop: str,
         quantity_kg: float,
+        confidence: str = "low",
         notes: str = "",
         is_fallback: bool = False;
 }
 sem HarvestDraft.crop = "The crop name mentioned in the message.";
 sem HarvestDraft.quantity_kg = "Estimated harvest quantity in kilograms.";
+sem HarvestDraft.confidence = "How sure you are this parse is correct: 'high' if crop and quantity are stated explicitly and unambiguously, 'medium' if you had to infer a unit or a vague quantity like 'a few sacks', 'low' if the message is garbled, contradictory, or missing a crop or quantity entirely.";
 sem HarvestDraft.notes = "Any extra context from the farmer's message.";
 
 def _parse_harvest_llm(message: str) -> HarvestDraft by llm();
-sem _parse_harvest_llm = "Parse a farmer's free-text harvest report into structured fields.";
+sem _parse_harvest_llm = "Parse a farmer's free-text harvest report into structured fields. Be honest about confidence - do not default to 'high' just because a value was extracted.";
 sem _parse_harvest_llm.message = "Raw text message from the farmer describing their harvest.";
 
 def parse_harvest(message: str) -> HarvestDraft {
@@ -42,6 +44,7 @@ def parse_harvest(message: str) -> HarvestDraft {
         return HarvestDraft(
             crop="unknown",
             quantity_kg=0.0,
+            confidence="low",
             notes="[fallback] could not parse message: " + message,
             is_fallback=True
         );
@@ -114,17 +117,39 @@ def farmer_message(plan_summary: str, language: str = "en") -> str {
 
 # ---------------------------------------------------------------------------
 # explain: one-paragraph "why I did this" for the UI.
+#
+# Takes the before/after numbers as required arguments (not just embedded
+# in plan_summary prose) so the explanation is structurally forced to cite
+# real computed deltas - "spoilage dropped from X% to Y%" - rather than
+# vague "the agent optimised the route" text. A (logic.jac) computes all
+# of these; this function only turns them into a sentence.
 # ---------------------------------------------------------------------------
 
 glob EXPLAIN_FALLBACK: str = "[fallback] The agent updated the plan in response to a network change, selecting the option with the best score among the available alternatives.";
 
-def _explain_llm(plan_summary: str) -> str by llm();
-sem _explain_llm = "Explain, in plain language for a judge/observer, why a plan was chosen: what changed, what alternatives existed, and why this one scored best.";
-sem _explain_llm.plan_summary = "A short deterministic summary of the plan or decision.";
+def _explain_llm(
+    plan_summary: str,
+    spoilage_before_pct: float,
+    spoilage_after_pct: float,
+    income_before: float,
+    income_after: float
+) -> str by llm();
+sem _explain_llm = "Explain, in plain language for a judge/observer, why a plan was chosen: what changed, what alternatives existed, and why this one scored best. You MUST cite the given before/after spoilage and income numbers explicitly in the explanation (e.g. 'spoilage dropped from X% to Y%') - never write a vague summary that omits them.";
+sem _explain_llm.plan_summary = "A short deterministic summary of what changed and the alternatives considered (no need to restate the numbers here - they're given separately below).";
+sem _explain_llm.spoilage_before_pct = "Baseline spoilage percentage (0-100), computed by code.";
+sem _explain_llm.spoilage_after_pct = "Spoilage percentage after this plan (0-100), computed by code.";
+sem _explain_llm.income_before = "Baseline farmer income in LKR, computed by code.";
+sem _explain_llm.income_after = "Farmer income after this plan in LKR, computed by code.";
 
-def explain(plan_summary: str) -> str {
+def explain(
+    plan_summary: str,
+    spoilage_before_pct: float,
+    spoilage_after_pct: float,
+    income_before: float,
+    income_after: float
+) -> str {
     try {
-        return _explain_llm(plan_summary);
+        return _explain_llm(plan_summary, spoilage_before_pct, spoilage_after_pct, income_before, income_after);
     } except Exception {
         return EXPLAIN_FALLBACK;
     }
