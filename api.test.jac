@@ -1,9 +1,13 @@
 """agriPulse - Shape tests for api.jac contract endpoints (owner: A).
 
-CONTRACT v1 shape checks against the current STUB placeholder seed. These
-assert every required key exists with the right type and that required
-lists are non-empty - they do NOT assert real scoring/merge/replan values,
-since none of that logic exists yet.
+load_seed() and baseline_plan() are real now (build/read the actual graph
+from data.jac's 12-farmer seed); merge_routes()/replan_on_event() are
+still STUB and keep asserting on the fixed placeholder seed.
+
+These tests share `root` with every other test file (jac-testing: parallel
+workers, persisted graph) - run with JAC_TEST_JOBS=0 for a clean run, since
+load_seed() wipes/rebuilds the Farmer/Harvest/Hub/Market/Truck node types
+that other test files (models.test.jac, logic.test.jac) also touch.
 """
 
 test "load_seed matches contract shape" {
@@ -12,13 +16,13 @@ test "load_seed matches contract shape" {
     assert isinstance(result.state, State);
 
     state = result.state;
-    assert len(state.farmers) == 3;
-    assert len(state.harvests) == 3;
-    assert len(state.hubs) == 2;
-    assert len(state.markets) == 1;
-    assert len(state.trucks) == 2;
-    assert len(state.routes) > 0;
-    assert len(state.plans) > 0;
+    assert len(state.farmers) == 12;
+    assert len(state.harvests) == 12;
+    assert len(state.hubs) == 4;
+    assert len(state.markets) == 3;
+    assert len(state.trucks) == 3;
+    assert len(state.routes) == 0;   # nothing planned yet - that's baseline_plan()'s job
+    assert len(state.plans) == 0;
 
     farmer = state.farmers[0];
     assert isinstance(farmer.id, str);
@@ -45,8 +49,27 @@ test "load_seed matches contract shape" {
     assert isinstance(truck.capacityKg, float);
     assert isinstance(truck.costPerKm, float);
     assert isinstance(truck.status, str);
+}
 
-    route = state.routes[0];
+test "load_seed is idempotent: same counts on repeat calls, no duplicates" {
+    first = load_seed().state;
+    second = load_seed().state;
+    assert len(first.farmers) == len(second.farmers) == 12;
+    assert len(first.harvests) == len(second.harvests) == 12;
+    assert len(first.hubs) == len(second.hubs) == 4;
+    assert len(first.markets) == len(second.markets) == 3;
+    assert len(first.trucks) == len(second.trucks) == 3;
+}
+
+test "baseline_plan matches contract shape" {
+    load_seed();
+    result = baseline_plan();
+    assert isinstance(result, BaselinePlanResult);
+    assert isinstance(result.state, State);
+    assert len(result.state.routes) == 12;
+    assert len(result.state.plans) == 12;
+
+    route = result.state.routes[0];
     assert isinstance(route.truckId, str);
     assert isinstance(route.farmerIds, list);
     assert isinstance(route.hubIds, list);
@@ -54,18 +77,11 @@ test "load_seed matches contract shape" {
     assert isinstance(route.distanceKm, float);
     assert isinstance(route.hours, float);
 
-    plan = state.plans[0];
+    plan = result.state.plans[0];
     assert isinstance(plan.routeId, str);
     assert isinstance(plan.expectedSpoilagePct, float);
     assert isinstance(plan.expectedIncome, float);
     assert isinstance(plan.truckCost, float);
-}
-
-test "baseline_plan matches contract shape" {
-    result = baseline_plan();
-    assert isinstance(result, BaselinePlanResult);
-    assert isinstance(result.state, State);
-    assert len(result.state.routes) > 0;
 
     assert isinstance(result.score, Score);
     assert isinstance(result.score.baseline, ScoreSet);
@@ -74,6 +90,52 @@ test "baseline_plan matches contract shape" {
     assert isinstance(result.score.baseline.income, float);
     assert isinstance(result.score.baseline.truckCost, float);
     assert isinstance(result.score.agent.spoilagePct, float);
+}
+
+test "baseline_plan: every harvest appears in exactly one route" {
+    load_seed();
+    result = baseline_plan();
+    state = result.state;
+
+    for harvest in state.harvests {
+        matching = [
+            r for r in state.routes
+            if harvest.farmerId in r.farmerIds
+        ];
+        assert len(matching) == 1, f"harvest {harvest.id} should be on exactly one route";
+    }
+}
+
+test "baseline_plan: spoilagePct is 0-100, income and truckCost are positive" {
+    load_seed();
+    result = baseline_plan();
+
+    assert 0.0 <= result.score.baseline.spoilagePct <= 100.0;
+    assert result.score.baseline.income > 0.0;
+    assert result.score.baseline.truckCost > 0.0;
+
+    for plan in result.state.plans {
+        assert 0.0 <= plan.expectedSpoilagePct <= 100.0;
+        assert plan.expectedIncome > 0.0;
+        assert plan.truckCost > 0.0;
+    }
+}
+
+test "baseline_plan: no route exceeds its truck's capacityKg" {
+    load_seed();
+    result = baseline_plan();
+    state = result.state;
+
+    truck_by_id: dict[str, TruckInfo] = {};
+    for t in state.trucks { truck_by_id[t.id] = t; }
+    harvest_by_farmer_id: dict[str, HarvestInfo] = {};
+    for h in state.harvests { harvest_by_farmer_id[h.farmerId] = h; }
+
+    for route in state.routes {
+        truck = truck_by_id[route.truckId];
+        harvest = harvest_by_farmer_id[route.farmerIds[0]];
+        assert harvest.kg <= truck.capacityKg;
+    }
 }
 
 test "merge_routes matches contract shape" {
