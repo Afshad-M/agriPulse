@@ -45,3 +45,12 @@ project_id = "prj_01774d93c5794003aa2c427b0631f8eb"
 [byllm.model]
 api_key = "${GOOGLE_API_KEY}"
 default_model = "${LLM_MODEL:-gemini/gemini-3.8-flash}"
+
+[placement.pins]
+# Whole-module pin (not per-function): a plain `def` pinned individually to
+# "client" inside an otherwise server-anchored module never gets a real ES
+# export in the client bundle (jac-codespaces: only exposed :pub/:protect
+# declarations and client-placed VALUES cross a module boundary that way).
+# Pinning the whole module moves every declaration in it - mock_state
+# included - so api_layer.jac's `import from mock_api { ... }` resolves.
+mock_api = "client"
