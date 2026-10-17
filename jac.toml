@@ -54,3 +54,11 @@ default_model = "${LLM_MODEL:-gemini/gemini-3.8-flash}"
 # Pinning the whole module moves every declaration in it - mock_state
 # included - so api_layer.jac's `import from mock_api { ... }` resolves.
 mock_api = "client"
+# Same reasoning, same fix: mock_layer.jac (C) holds the plain fetch_merge_routes/
+# fetch_replan wrappers split out of api_layer.jac (see that file's header).
+mock_layer = "client"
+# api_layer.jac (C) imports api.jac -> logic.jac for the real load_seed/
+# baseline_plan RPC calls; logic.jac's graph-filter syntax can't lower to
+# the client bundle (E5097), so this stays explicitly server, with its
+# fetch_seed/fetch_baseline_plan as def:pub RPC endpoints instead.
+api_layer = "server"

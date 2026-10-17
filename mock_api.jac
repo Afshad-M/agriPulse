@@ -541,3 +541,140 @@ def:pub mock_breakdown() -> dict[str, any] {
         }
     };
 }
+
+def:pub mock_road_closed() -> dict[str, any] {
+    return {
+        "data": {
+            "result": {
+                "diff": {
+                    "removedRouteIds": ["r-merged-01"],
+                    "addedRouteIds": ["r-event-03"],
+                    "reassigned": [
+                        {
+                            "routeId": "r-merged-01",
+                            "fromTruckId": "truck01",
+                            "toTruckId": "truck01"
+                        }
+                    ],
+                    "notes": [
+                        "Road from Hub 01 to Market 01 reported closed",
+                        "Route detoured through Hub 03 to reach Market 03 instead"
+                    ]
+                },
+                "state": mock_state(merged=True, disrupted=False),
+                "score": {
+                    "baseline": {
+                        "spoilagePct": 13.6,
+                        "income": 2901600,
+                        "truckCost": 90528
+                    },
+                    "agent": {"spoilagePct": 8.9, "income": 2819400, "truckCost": 63120}
+                },
+                "explanation": "The Hub 01 to Market 01 road is closed. The merged route is detoured through Hub 03 to Market 03, adding distance but keeping every farmer on one truck.",
+                "messages": [
+                    {
+                        "farmerId": "f01",
+                        "farmerName": "Kamal Perera",
+                        "language": "si",
+                        "text": "මාර්ග වසා දැමීම නිසා ඔබේ බෙදාහැරීම නව මාර්ගයකින් සිදු කෙරේ.",
+                        "isFallback": false
+                    },
+                    {
+                        "farmerId": "f02",
+                        "farmerName": "Nirosha Silva",
+                        "language": "si",
+                        "text": "මාර්ග වසා දැමීම නිසා ඔබේ බෙදාහැරීම නව මාර්ගයකින් සිදු කෙරේ.",
+                        "isFallback": false
+                    }
+                ]
+            }
+        }
+    };
+}
+
+def:pub mock_price_crash() -> dict[str, any] {
+    return {
+        "data": {
+            "result": {
+                "diff": {
+                    "removedRouteIds": ["r-merged-02"],
+                    "addedRouteIds": ["r-event-04"],
+                    "reassigned": [
+                        {
+                            "routeId": "r-merged-02",
+                            "fromTruckId": "truck02",
+                            "toTruckId": "truck02"
+                        }
+                    ],
+                    "notes": [
+                        "Tomato price at Market 03 crashed to 90/kg",
+                        "Route redirected to Market 01 (220/kg) instead"
+                    ]
+                },
+                "state": mock_state(merged=True, disrupted=False),
+                "score": {
+                    "baseline": {
+                        "spoilagePct": 13.6,
+                        "income": 2901600,
+                        "truckCost": 90528
+                    },
+                    "agent": {"spoilagePct": 7.8, "income": 2756900, "truckCost": 58420}
+                },
+                "explanation": "Market 03's tomato price crashed from 200/kg to 90/kg. Market 01 (220/kg) is now the better destination, even after the extra travel distance.",
+                "messages": [
+                    {
+                        "farmerId": "f03",
+                        "farmerName": "S. Rajendran",
+                        "language": "ta",
+                        "text": "சந்தை விலை வீழ்ச்சியடைந்ததால் உங்கள் அறுவடை வேறு சந்தைக்கு திருப்பப்பட்டுள்ளது.",
+                        "isFallback": false
+                    },
+                    {
+                        "farmerId": "f09",
+                        "farmerName": "P. Sivakumar",
+                        "language": "ta",
+                        "text": "சந்தை விலை வீழ்ச்சியடைந்ததால் உங்கள் அறுவடை வேறு சந்தைக்கு திருப்பப்பட்டுள்ளது.",
+                        "isFallback": false
+                    }
+                ]
+            }
+        }
+    };
+}
+
+def:pub mock_new_harvest(text: str = "") -> dict[str, any] {
+    return {
+        "data": {
+            "result": {
+                "diff": {
+                    "removedRouteIds": [],
+                    "addedRouteIds": ["r-event-05"],
+                    "reassigned": [],
+                    "notes": [
+                        "New harvest logged: " + text if len(text) > 0 else "New harvest logged from free text",
+                        "Pooled onto the nearest route with spare truck capacity"
+                    ]
+                },
+                "state": mock_state(merged=True, disrupted=False),
+                "score": {
+                    "baseline": {
+                        "spoilagePct": 13.6,
+                        "income": 2901600,
+                        "truckCost": 90528
+                    },
+                    "agent": {"spoilagePct": 7.6, "income": 2944100, "truckCost": 58420}
+                },
+                "explanation": "A new harvest was parsed from free text and pooled onto the nearest route with spare capacity, improving total income without adding a truck.",
+                "messages": [
+                    {
+                        "farmerId": "f13",
+                        "farmerName": "Lasantha Weerasinghe",
+                        "language": "si",
+                        "text": "ඔබේ නව අස්වැන්න දැනට පවතින මාර්ගයකට එකතු කර ඇත.",
+                        "isFallback": false
+                    }
+                ]
+            }
+        }
+    };
+}
