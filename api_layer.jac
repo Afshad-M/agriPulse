@@ -1,23 +1,23 @@
-"""agriPulse - Client API Layer (owner: B).
+import from mock_api { mock_load_seed, mock_baseline_plan, mock_merge_routes, mock_breakdown }
 
-Thin wrappers the UI calls to reach the server contract (api.jac, owner A),
-so components never await api.jac functions directly and swapping in
-mock_api.jac for a demo is a one-line change. Skeleton only - no logic yet.
-"""
+glob USE_MOCK_API: bool = True;
 
-import from models { Plan }
-
-async def fetch_baseline_plan() -> list[Plan] {
-    # TODO(B): await the real api.baseline_plan(), or fall back to mock_api.
-    return [];
+def fetch_seed() -> dict[str, any] {
+    if USE_MOCK_API { return mock_load_seed(); }
+    return mock_load_seed();
 }
 
-async def fetch_merge_routes() -> list[Plan] {
-    # TODO(B): await api.merge_routes().
-    return [];
+def fetch_baseline_plan() -> dict[str, any] {
+    if USE_MOCK_API { return mock_baseline_plan(); }
+    return mock_baseline_plan();
 }
 
-async def fetch_replan(reason: str) -> list[Plan] {
-    # TODO(B): await api.replan_on_event(reason).
-    return [];
+def fetch_merge_routes() -> dict[str, any] {
+    if USE_MOCK_API { return mock_merge_routes(); }
+    return mock_merge_routes();
+}
+
+def fetch_replan(reason: str) -> dict[str, any] {
+    if USE_MOCK_API { return mock_breakdown(); }
+    return mock_breakdown();
 }
