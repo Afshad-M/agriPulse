@@ -30,3 +30,9 @@ watchdog = ">=3.0.0"
 
 
 [client]
+
+# Added by C (see .env.example). Confirm the provider/model and the right
+# way to install byllm with a mentor if `jac run` can't resolve it yet.
+[plugins.byllm.model]
+api_key = "${OPENAI_API_KEY}"
+default_model = "${LLM_MODEL:-gpt-4o-mini}"
