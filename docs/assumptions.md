@@ -165,6 +165,106 @@ identical in `SEED_MARKETS` and `SEED_MARKET_RECORDS`):
   wipes and rewrites them every call from the current computed plan (see
   "The real merge" above), not from any `data.jac` record.
 
+## The real replan (`logic.jac` / `api.jac`) — `truck_breakdown`
+
+`replan_on_event()` is real for `event.type == "truck_breakdown"`; every
+other type (`road_closed`, `price_crash`, `new_harvest`, or anything else
+unrecognised) returns a valid, unchanged result with an empty `diff` and
+`diff.notes = "Event type <type> is not handled yet"` — never a crash,
+never a changed plan. This is plain deterministic code
+(`logic.apply_replan_event()` / `apply_truck_breakdown_event()`) — the LLM
+is not involved (the `explain`/`farmer_message` LLM upgrade is a later
+block; this block's `explanation` and `messages` are deterministic
+templates, `isFallback=True`).
+
+- **Always rebuilds from a fresh merge.** Every `truck_breakdown` call
+  re-runs `run_merge_routes()` first (ignoring whatever `Plan` nodes were
+  left over from an earlier call) and only then applies the event. This is
+  why calling the exact same event twice gives identical output — nothing
+  from a previous replan call's reassignments/removals carries over, only
+  the truck's own `status` does (see below).
+- **`Truck.status`** (`models.jac`, additive, default `"available"`) is
+  the only piece of replan state that persists across calls: a
+  `truck_breakdown` event sets the named truck's `status` to `"broken"`
+  directly on its graph node. `load_seed()` resets it, since it rebuilds
+  every `Truck` node from scratch from `data.jac`'s `SEED_TRUCKS` — it does
+  **not** get reset by another replan call (re-merging doesn't touch
+  `Truck.status`).
+- **Validation, never a crash.** A missing or unknown `truckId` (including
+  a string that isn't even a valid id, e.g. not a UUID) returns an empty
+  `diff` with a plain-language note (`"Truck <id> does not exist."` /
+  `"Truck breakdown event is missing a truckId."`) and leaves the plan
+  untouched — no merge is re-run, no `Truck.status` is touched. A valid
+  `truckId` that simply isn't serving any current route still gets marked
+  `"broken"` (it is a real truck breaking down, in service or not), but
+  produces an empty diff too (`"Truck <plate> broke down but was not
+  serving any route."`).
+- **One truck, one route, for replan purposes.** Baseline/merge treat
+  trucks as a reusable pool (see above); replan does not — once the
+  broken truck's routes are pulled off, a truck already carrying another
+  current route is never considered "free" for a reassignment or for
+  topping up spare capacity. This is a deliberate, replan-only tightening
+  of the baseline/merge assumption, not a correction of it.
+- **Per-route resolution, in sorted route-id order.** For every route the
+  broken truck was serving (processed in ascending `id` order, so output
+  is deterministic when more than one route is affected):
+  1. **Replacement truck** — `logic.pick_replacement_truck(route_kg,
+     free_trucks)` (a deliberate stub, see its `TODO` in `logic.jac`:
+     smallest fitting `capacityKg`, lowest id on a tie, `None` if nothing
+     fits) picks from every truck that is `status == "available"` and not
+     already carrying another current route. On success the route is
+     rebuilt on the new truck with a **new id `x1`, `x2`, ...** (never
+     reusing the old id — `x` marks "created by replan", same spirit as
+     `m1`/`m2` marking "created by merge"), logged as one
+     `diff.reassigned` entry `{routeId: <new x-id>, fromTruckId:
+     <broken>, toTruckId: <new>}`, with the old id in
+     `removedRouteIds` and the new id in `addedRouteIds`. Distance/hours
+     are unchanged (same hubs/market path, so the leg is identical — only
+     the truck changed); `truckCost` is recomputed as the new truck's
+     `costPerKm × distanceKm`; spoilage/income are unaffected by *which*
+     truck carries the same cargo over the same route at the same elapsed
+     time, so they're recomputed from the same formula and come out equal
+     — all four are run back through `_score_route_from_leg()` (the helper
+     `_try_merge()` also uses) rather than special-cased, so a future
+     change to that formula automatically applies here too.
+  2. **Attach to another route (fallback)** — if no replacement truck
+     fits, `logic._try_attach_to_existing_route()` looks (sorted by id,
+     first fit wins) for another **current** route that shares the
+     orphan's `marketId` and whose *own* truck has spare `capacityKg` for
+     the combined load. Unlike step 1, the target route keeps its own id
+     and truck — it just gains the orphan's farmers/hubs, and its
+     distance/hours/spoilage/income/truckCost are recomputed the same way
+     (union of hubs via `HubRoute`, same leg-scoring helper). The orphan's
+     old id is removed; nothing is added (the surviving route's id didn't
+     change).
+  3. **Unserved (last resort)** — if neither works, the route is dropped:
+     its id goes in `removedRouteIds`, nothing is added, and
+     `diff.notes` names every unserved farmer by id and kg so the UI/tests
+     can show exactly who lost pickup and why.
+- **`score.agent`** after a `truck_breakdown` is the same kg-weighted
+  `spoilagePct` / summed `income`/`truckCost` shape as `merge_routes()`,
+  computed from the plan actually left standing after the event (not the
+  pre-event merged plan). `score.baseline` is always a fresh
+  `compute_baseline()` — unaffected by any event, same as `merge_routes()`.
+- **`explanation`** is a deterministic sentence built from the real diff,
+  e.g. `"Truck WP CAB-1001 broke down. Route m1 (5 farmers, 880 kg) moved
+  to truck CP CAB-1500. No farmers are unserved. Spoilage rose by 0.8
+  points."` — one clause per affected route (moved / attached / removed),
+  then an unserved-farmer count, then the aggregate spoilage delta
+  (pre-event merged plan vs. post-event plan).
+- **`messages`** has one `Message` per farmer who was on an affected
+  route, using a fixed per-language (`en`/`si`/`ta`), per-outcome
+  (reassigned/attached/unserved) template
+  (`logic.BREAKDOWN_MESSAGE_TEMPLATES`), always `isFallback=True` — this is
+  the deterministic version; a later block swaps these for
+  `llm.farmer_message()`. The Sinhala/Tamil text is machine-drafted, same
+  caveat as `llm.jac`'s `FARMER_MESSAGE_FALLBACKS`: have a native speaker
+  sanity-check before the demo.
+- **Demo scenario** (`data.jac`'s `DEMO_BREAKDOWN_SCENARIO`): breaking `WP
+  CAB-1001` (the 1000kg truck, after the 5-farmer merge demo put all 880kg
+  on it) should land on step 1 above once `pick_replacement_truck` is
+  implemented — `CP CAB-1500`/`MH CAB-2000` are both big enough.
+
 ## Known gaps / open items for the team
 
 - `models.jac`'s `Harvest` node still has no edge linking it to its
@@ -174,12 +274,16 @@ identical in `SEED_MARKETS` and `SEED_MARKET_RECORDS`):
   `SEED_FARMERS`/`SEED_HARVESTS` (parallel lists), verified by the "every
   harvest appears in exactly one route" test. A real edge would be more
   robust if the convention ever becomes hard to keep in sync.
-- `logic.pick_best_merge()` is a deliberate stub (always returns `None`) —
-  until it's implemented, `merge_routes()` applies zero merges, so its
-  `agent` score equals its `baseline` score and several tests in
-  `logic.test.jac`/`api.test.jac` are EXPECTED to fail (documented inline
-  at each one). `replan_on_event()` is still the fixed STUB placeholder
-  seed, unrelated to this.
+- `logic.pick_best_merge()` is implemented (no longer a stub) — real
+  merges now happen, so `merge_routes()`'s `agent` score beats its
+  `baseline`.
+- `logic.pick_replacement_truck()` is the current deliberate stub (always
+  returns `None`) — until it's implemented, every `truck_breakdown`
+  reassignment attempt falls through to the attach-to-existing-route
+  fallback or, failing that, drops the route as unserved. Several tests in
+  `logic.test.jac`/`api.test.jac` are EXPECTED to fail until it's
+  implemented (documented inline at each one, same pattern
+  `pick_best_merge` used to follow).
 - This was validated locally with the `jac` CLI available in this
   environment; if that differs from the version the team standardised on
   (per the playbook's 9:15 version-match step), re-run `jac check` against

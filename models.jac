@@ -10,7 +10,10 @@ code is unaffected) added so the real baseline computation (logic.jac) has
 everything it needs on the graph itself rather than re-deriving it from
 data.jac's lookup tables at read time. Plan's additive fields do the same
 job for the "current plan" (baseline or merged routes) that merge_routes()
-persists - see docs/assumptions.md.
+persists - see docs/assumptions.md. Truck.status is additive too, but is
+never seeded - it starts "available" and is only ever flipped to "broken"
+by replan_on_event()'s truck_breakdown handling (logic.jac); load_seed()
+resets it by rebuilding Truck nodes from scratch.
 """
 
 node Farmer {
@@ -42,7 +45,8 @@ node Market {
 node Truck {
     has plate: str,
         capacity_kg: float = 0.0,
-        cost_per_km: float = 0.0;
+        cost_per_km: float = 0.0,
+        status: str = "available";   # "available" | "broken" - set by replan_on_event()
 }
 
 node Plan {
