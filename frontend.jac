@@ -30,7 +30,8 @@ glob UI_TEXT: dict[str, dict[str, str]] = {
         "market": "Market", "distance": "Distance", "time": "Travel time", "loss": "Expected spoilage",
         "shared": "You share this truck with {n} other farmers.", "alone": "Your harvest travels on its own truck.",
         "messages": "Messages for you", "none": "No new messages yet.", "hours": "hours",
-        "income": "Expected income"
+        "income": "Expected income", "log": "Tell us about a new harvest",
+        "ph": "For example: 80kg beans, ready in 2 hours", "send": "Send"
     },
     "si": {
         "hello": "ආයුබෝවන්", "pick": "ගොවියා තෝරන්න", "harvest": "ඔබේ අස්වැන්න", "crop": "බෝගය",
@@ -38,7 +39,8 @@ glob UI_TEXT: dict[str, dict[str, str]] = {
         "market": "වෙළඳපොළ", "distance": "දුර", "time": "ගමන් කාලය", "loss": "අපේක්ෂිත නරක් වීම",
         "shared": "ඔබ මෙම ට්‍රක් රථය තවත් ගොවීන් {n} දෙනෙක් සමඟ බෙදාගනී.", "alone": "ඔබේ අස්වැන්න තනිවම ට්‍රක් රථයකින් යයි.",
         "messages": "ඔබට පණිවිඩ", "none": "තවම නව පණිවිඩ නැත.", "hours": "පැය",
-        "income": "අපේක්ෂිත ආදායම"
+        "income": "අපේක්ෂිත ආදායම", "log": "නව අස්වැන්නක් ගැන කියන්න",
+        "ph": "උදා: බෝංචි කිලෝ 80ක්, පැය 2කින් සූදානම්", "send": "යවන්න"
     },
     "ta": {
         "hello": "வணக்கம்", "pick": "விவசாயியைத் தேர்ந்தெடுக்கவும்", "harvest": "உங்கள் அறுவடை", "crop": "பயிர்",
@@ -46,7 +48,8 @@ glob UI_TEXT: dict[str, dict[str, str]] = {
         "market": "சந்தை", "distance": "தூரம்", "time": "பயண நேரம்", "loss": "எதிர்பார்க்கப்படும் வீணாதல்",
         "shared": "இந்த லாரியை மேலும் {n} விவசாயிகளுடன் பகிர்கிறீர்கள்.", "alone": "உங்கள் அறுவடை தனி லாரியில் செல்கிறது.",
         "messages": "உங்களுக்கான செய்திகள்", "none": "புதிய செய்திகள் இல்லை.", "hours": "மணி",
-        "income": "எதிர்பார்க்கப்படும் வருமானம்"
+        "income": "எதிர்பார்க்கப்படும் வருமானம்", "log": "புதிய அறுவடை பற்றி சொல்லுங்கள்",
+        "ph": "எ.கா: 80 கிலோ பீன்ஸ், 2 மணி நேரத்தில் தயார்", "send": "அனுப்பு"
     }
 };
 
@@ -67,7 +70,11 @@ def:pub app -> JsxElement {
         view: str = "dashboard",
         lang: str = "en",
         sel_farmer: str = "",
-        sel_truck: str = "";
+        sel_truck: str = "",
+        farmer_text: str = "",
+        farmer_sent_text: str = "",
+        farmer_reply_text: str = "",
+        farmer_reply_is_fallback: bool = False;
 
     async can with entry {
         await load_all(False);
@@ -289,6 +296,44 @@ def:pub app -> JsxElement {
         } except Exception {
             error = "That event could not be applied. Press Reset and try again.";
             event_report = {};
+        }
+        running = False;
+    }
+
+    async def send_farmer_harvest() {
+        text_in = farmer_text.strip();
+        if len(text_in) == 0 or running { return; }
+        running = True;
+        error = "";
+        fid = eff_farmer;
+        sent_text = text_in;
+        label = "New harvest: " + (farmer_name_by_id[fid] if fid in farmer_name_by_id else "farmer");
+        try {
+            res = await fetch_event("new_harvest", "", "", "", "", text_in, fid);
+            dd = res["diff"] as dict[str, any];
+            notes_list = dd["notes"] as list[str];
+            reply_msgs = res["messages"] as list[dict[str, any]];
+            if len(reply_msgs) > 0 {
+                farmer_reply_text = reply_msgs[0]["text"] as str;
+                farmer_reply_is_fallback = reply_msgs[0]["isFallback"] as bool;
+            } else {
+                # Parse failure (or anything else with no per-farmer message) -
+                # show the backend's note verbatim, never a faked confirmation.
+                farmer_reply_text = notes_list[0] if len(notes_list) > 0 else "";
+                farmer_reply_is_fallback = False;
+            }
+            state = res["state"] as dict[str, any];
+            score = res["score"] as dict[str, any];
+            messages = reply_msgs;
+            removed_ids = dd["removedRouteIds"] as list[str];
+            added_ids = dd["addedRouteIds"] as list[str];
+            event_report = {"title": label, "explanation": res["explanation"] as str, "notes": notes_list};
+            data_source = "real";
+            scenario = label;
+            farmer_sent_text = sent_text;
+            farmer_text = "";
+        } except Exception {
+            error = "That event could not be applied. Press Reset and try again.";
         }
         running = False;
     }
@@ -540,7 +585,7 @@ def:pub app -> JsxElement {
             {if view == "farmer" {
               <div style={{"maxWidth": "720px", "margin": "0 auto"}}>
                 <div style={{"display": "flex", "gap": "10px", "flexWrap": "wrap", "alignItems": "center", "marginBottom": "16px"}}>
-                  <select value={eff_farmer} onChange={lambda (e: ChangeEvent) { sel_farmer = e.target.value; }} aria-label={t["pick"]} style={{"flex": "1", "minWidth": "200px", "padding": "12px 14px", "border": "1px solid " + C["borderStrong"], "borderRadius": "12px", "fontSize": "16px", "fontFamily": "inherit", "backgroundColor": C["surface"], "color": C["text"]}}>
+                  <select value={eff_farmer} onChange={lambda (e: ChangeEvent) { sel_farmer = e.target.value; farmer_sent_text = ""; farmer_reply_text = ""; }} aria-label={t["pick"]} style={{"flex": "1", "minWidth": "200px", "padding": "12px 14px", "border": "1px solid " + C["borderStrong"], "borderRadius": "12px", "fontSize": "16px", "fontFamily": "inherit", "backgroundColor": C["surface"], "color": C["text"]}}>
                     {for fm in farmers { <option key={fm["id"] as str} value={fm["id"] as str}>{fm["name"]} · {fm["district"]}</option> }}
                   </select>
                   <div style={{"display": "flex", "gap": "4px", "padding": "4px", "backgroundColor": C["surface"], "border": "1px solid " + C["border"], "borderRadius": "12px"}}>
@@ -612,6 +657,28 @@ def:pub app -> JsxElement {
                             </div>
                           }}
                           {if len(my_messages) == 0 { <p style={{"margin": "10px 0 0", "color": C["muted"], "fontSize": "16px"}}>{t["none"]}</p> }}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{"marginTop": "14px"}}>
+                      <div style={card}>
+                        <div style={{"padding": "20px 22px"}}>
+                          <div style={small_label}>{t["log"]}</div>
+                          <textarea value={farmer_text} onChange={lambda (e: ChangeEvent) { farmer_text = e.target.value; }} rows={3} placeholder={t["ph"]} style={{"width": "100%", "marginTop": "10px", "padding": "12px 14px", "border": "1px solid " + C["borderStrong"], "borderRadius": "12px", "fontSize": "17px", "fontFamily": "inherit", "boxSizing": "border-box"}}></textarea>
+                          <button onClick={lambda (e: MouseEvent) { send_farmer_harvest(); }} disabled={running} style={{"marginTop": "12px", "width": "100%", "padding": "14px", "backgroundColor": C["primary"], "color": "#FFFFFF", "border": "none", "borderRadius": "12px", "fontSize": "17px", "fontWeight": "650", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{"Working…" if running else t["send"]}</button>
+
+                          {if farmer_sent_text {
+                            <div style={{"marginTop": "16px", "display": "flex", "flexDirection": "column", "gap": "10px"}}>
+                              <div style={{"alignSelf": "flex-end", "maxWidth": "85%", "padding": "12px 14px", "backgroundColor": C["primary"], "color": "#FFFFFF", "borderRadius": "14px 14px 4px 14px", "fontSize": "16px"}}>{farmer_sent_text}</div>
+                              {if farmer_reply_text {
+                                <div style={{"alignSelf": "flex-start", "maxWidth": "85%", "padding": "12px 14px", "backgroundColor": C["surface2"], "border": "1px solid " + C["border"], "borderRadius": "14px 14px 14px 4px", "fontSize": "16px"}}>
+                                  {if farmer_reply_is_fallback { <div style={{"marginBottom": "6px"}}><span style={{"fontSize": "11px", "fontWeight": "600", "padding": "2px 8px", "borderRadius": "999px", "color": C["subtle"], "backgroundColor": C["surface"]}}>Template message</span></div> }}
+                                  {farmer_reply_text}
+                                </div>
+                              }}
+                            </div>
+                          }}
                         </div>
                       </div>
                     </div>

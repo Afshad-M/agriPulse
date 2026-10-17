@@ -122,8 +122,8 @@ test "a merge whose combined kg exceeds every truck's capacity is rejected" {
     mine = [r for r in routes if r.farmer_ids == [jid(farmer_a)] or r.farmer_ids == [jid(farmer_b)]];
     assert len(mine) == 2;
 
-    harvest_by_farmer = _harvest_by_farmer_id();
-    candidates = _build_merge_candidates(mine, [truck], harvest_by_farmer);
+    harvest_by_id = _harvest_by_id();
+    candidates = _build_merge_candidates(mine, [truck], harvest_by_id);
     # 600kg + 600kg = 1200kg, exceeds the only available truck's 1000kg capacity
     assert len(candidates) == 0;
 
