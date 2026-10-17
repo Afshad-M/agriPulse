@@ -295,3 +295,38 @@ test "replan_on_event: the same truck_breakdown event twice gives identical resu
     reloaded = load_seed();
     assert len([t for t in reloaded.state.trucks if t.status == "broken"]) == 0;
 }
+
+test "truck_breakdown on the real seed: breaking the truck behind m1/m3/m6/m8 leaves 0 unserved" {
+    # merge_routes() over the full 12-farmer seed always produces merged
+    # routes m1/m3/m6/m8, all four on WP CAB-1001 - it's the smallest truck,
+    # and every one of those merged loads (390/190/500/880 kg) still fits
+    # under its 1000kg cap, so logic.jac's smallest-fitting-truck pick keeps
+    # landing on it. Breaking that truck therefore affects all 12 farmers /
+    # 1960kg total at once. The only other trucks are CP CAB-1500 (1500kg)
+    # and MH CAB-2000 (2000kg) - 3500kg of spare capacity, comfortably more
+    # than the 1960kg that needs a new home - so with the biggest route
+    # (m8, 880kg) given first pick of the free trucks, and the smaller
+    # routes then folding onto spare capacity (direct or already-
+    # reassigned), every farmer should end up served. If a future seed or
+    # assumptions change ever breaks this math, this test documents the
+    # exact numbers so a human can look instead of silently forcing it.
+    load_seed();
+    merged = merge_routes();
+
+    target_routes = [r for r in merged.state.routes if r.id in ["m1", "m3", "m6", "m8"]];
+    assert len(target_routes) == 4, "seed/merge shape changed - m1/m3/m6/m8 no longer all exist";
+
+    truck_ids = set([r.truckId for r in target_routes]);
+    assert len(truck_ids) == 1, "m1/m3/m6/m8 are expected to all share one truck in this seed";
+    broken_truck_id = list(truck_ids)[0];
+
+    event = Event(type="truck_breakdown", truckId=broken_truck_id);
+    result = replan_on_event(event);
+
+    assert "No farmers are unserved." in result.diff.notes;
+    total_affected_farmers = sum([len(r.farmerIds) for r in target_routes]);
+    assert len(result.messages) == total_affected_farmers;
+    for message in result.messages {
+        assert message.isFallback;
+    }
+}

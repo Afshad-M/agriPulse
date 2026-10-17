@@ -14,6 +14,12 @@ whole graph's node count, per jac-testing's guidance on shared, persisted,
 parallel-run root state - other tests (e.g. api.test.jac's load_seed) may
 have their own nodes on `root` at the same time. Run with JAC_TEST_JOBS=0
 for a fully deterministic single run.
+
+The real-12-farmer-seed truck_breakdown test lives in api.test.jac, not
+here - it needs load_seed(), and logic.jac cannot import from api.jac
+(api.jac already imports from logic.jac; logic.test.jac is an annex of
+logic.jac, so importing api back from here is a real circular import, not
+just a style choice).
 """
 
 test "score_route stub returns a float" {
@@ -278,7 +284,8 @@ test "truck_breakdown with no spare truck or route: route removed, farmers unser
     assert len(outcome.diff.removedRouteIds) >= 1;
     assert outcome.diff.addedRouteIds == [];
     assert outcome.diff.reassigned == [];
-    assert farmer_id in outcome.diff.notes;
+    assert farmer.name in outcome.diff.notes;    # notes show farmer NAMES, not ids
+    assert farmer_id not in outcome.diff.notes;
     assert "unserved" in outcome.diff.notes;
     assert len(outcome.messages) == 1;
     message = outcome.messages[0];
