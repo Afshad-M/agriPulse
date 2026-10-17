@@ -2,13 +2,10 @@ import from .api_layer { fetch_seed, fetch_baseline_plan, fetch_merge, fetch_eve
 
 # AgriPulse web app (C). Light, clean dashboard + a mobile-first Farmer view.
 # FRONTEND ONLY: everything here talks to the backend through api_layer.jac
-# (a thin adapter over the CONTRACT v1 endpoints), so when the backend's
-# replan_on_event stops being a stub nothing in this file changes. Until
-# then, an event type the backend doesn't implement comes back with an
-# empty diff and a note ending "is not handled yet" (api.jac/logic.jac) -
-# the UI detects that note and shows it verbatim instead of faking an
-# effect (a crashed price, a closed road, a planned pickup) that never
-# actually happened on the backend.
+# (a thin adapter over the CONTRACT v1 endpoints). Only "truck_breakdown" is
+# wired into the UI - it's the one event type apply_replan_event() (logic.jac)
+# actually implements - so the disruption panel offers nothing that would
+# come back unhandled.
 
 glob C: dict[str, str] = {
     "page": "#F4F7F5", "surface": "#FFFFFF", "surface2": "#F8FAF9",
@@ -24,13 +21,6 @@ glob C: dict[str, str] = {
 
 glob FONT: str = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif";
 
-glob EVENT_TABS: list[dict[str, str]] = [
-    {"type": "truck_breakdown", "label": "Truck breakdown"},
-    {"type": "road_closed", "label": "Road closed"},
-    {"type": "price_crash", "label": "Price crash"},
-    {"type": "new_harvest", "label": "New harvest"}
-];
-
 # Farmer-view strings. Sinhala and Tamil are drafts - a native speaker
 # should review them before the demo (see docs/assumptions.md).
 glob UI_TEXT: dict[str, dict[str, str]] = {
@@ -39,27 +29,24 @@ glob UI_TEXT: dict[str, dict[str, str]] = {
         "qty": "Quantity", "fresh": "Stays fresh for", "delivery": "Your delivery", "truck": "Truck",
         "market": "Market", "distance": "Distance", "time": "Travel time", "loss": "Expected spoilage",
         "shared": "You share this truck with {n} other farmers.", "alone": "Your harvest travels on its own truck.",
-        "messages": "Messages for you", "none": "No new messages yet.", "log": "Tell us about a new harvest",
-        "ph": "For example: 80kg beans, ready in 2 hours", "send": "Send", "hours": "hours",
-        "sent": "Sent. The agent is planning a pickup for you.", "income": "Expected income"
+        "messages": "Messages for you", "none": "No new messages yet.", "hours": "hours",
+        "income": "Expected income"
     },
     "si": {
         "hello": "ආයුබෝවන්", "pick": "ගොවියා තෝරන්න", "harvest": "ඔබේ අස්වැන්න", "crop": "බෝගය",
         "qty": "ප්‍රමාණය", "fresh": "නැවුම්ව පවතින කාලය", "delivery": "ඔබේ ප්‍රවාහනය", "truck": "ට්‍රක් රථය",
         "market": "වෙළඳපොළ", "distance": "දුර", "time": "ගමන් කාලය", "loss": "අපේක්ෂිත නරක් වීම",
         "shared": "ඔබ මෙම ට්‍රක් රථය තවත් ගොවීන් {n} දෙනෙක් සමඟ බෙදාගනී.", "alone": "ඔබේ අස්වැන්න තනිවම ට්‍රක් රථයකින් යයි.",
-        "messages": "ඔබට පණිවිඩ", "none": "තවම නව පණිවිඩ නැත.", "log": "නව අස්වැන්නක් ගැන කියන්න",
-        "ph": "උදා: බෝංචි කිලෝ 80ක්, පැය 2කින් සූදානම්", "send": "යවන්න", "hours": "පැය",
-        "sent": "යවන ලදී. ඔබේ ප්‍රවාහනය සැලසුම් කරමින් සිටී.", "income": "අපේක්ෂිත ආදායම"
+        "messages": "ඔබට පණිවිඩ", "none": "තවම නව පණිවිඩ නැත.", "hours": "පැය",
+        "income": "අපේක්ෂිත ආදායම"
     },
     "ta": {
         "hello": "வணக்கம்", "pick": "விவசாயியைத் தேர்ந்தெடுக்கவும்", "harvest": "உங்கள் அறுவடை", "crop": "பயிர்",
         "qty": "அளவு", "fresh": "புதிதாக இருக்கும் காலம்", "delivery": "உங்கள் போக்குவரத்து", "truck": "லாரி",
         "market": "சந்தை", "distance": "தூரம்", "time": "பயண நேரம்", "loss": "எதிர்பார்க்கப்படும் வீணாதல்",
         "shared": "இந்த லாரியை மேலும் {n} விவசாயிகளுடன் பகிர்கிறீர்கள்.", "alone": "உங்கள் அறுவடை தனி லாரியில் செல்கிறது.",
-        "messages": "உங்களுக்கான செய்திகள்", "none": "புதிய செய்திகள் இல்லை.", "log": "புதிய அறுவடை பற்றி சொல்லுங்கள்",
-        "ph": "எ.கா: 80 கிலோ பீன்ஸ், 2 மணி நேரத்தில் தயார்", "send": "அனுப்பு", "hours": "மணி",
-        "sent": "அனுப்பப்பட்டது. உங்கள் போக்குவரத்து திட்டமிடப்படுகிறது.", "income": "எதிர்பார்க்கப்படும் வருமானம்"
+        "messages": "உங்களுக்கான செய்திகள்", "none": "புதிய செய்திகள் இல்லை.", "hours": "மணி",
+        "income": "எதிர்பார்க்கப்படும் வருமானம்"
     }
 };
 
@@ -80,17 +67,7 @@ def:pub app -> JsxElement {
         view: str = "dashboard",
         lang: str = "en",
         sel_farmer: str = "",
-        event_kind: str = "truck_breakdown",
-        sel_truck: str = "",
-        sel_lane: str = "",
-        sel_market: str = "",
-        sel_crop: str = "",
-        harvest_text: str = "",
-        farmer_text: str = "",
-        farmer_note: str = "",
-        crash_market_id: str = "",
-        crash_crop: str = "",
-        closed_lane: str = "";
+        sel_truck: str = "";
 
     async can with entry {
         await load_all(False);
@@ -132,32 +109,8 @@ def:pub app -> JsxElement {
         for fid in (r["farmerIds"] as list[str]) { route_by_farmer[fid] = r; }
     }
 
-    lanes: list[dict[str, str]] = [];
-    lane_keys: list[str] = [];
-    lane_label_by_key: dict[str, str] = {};
-    for r in routes {
-        l_hub = (r["hubIds"] as list[str])[0] if len(r["hubIds"] as list[str]) > 0 else "";
-        l_mkt = r["marketId"] as str;
-        l_key = l_hub + "->" + l_mkt;
-        if l_key not in lane_keys {
-            lane_keys.append(l_key);
-            l_label = (hub_name_by_id[l_hub] if l_hub in hub_name_by_id else "Hub") + " to " + (market_name_by_id[l_mkt] if l_mkt in market_name_by_id else "Market");
-            lane_label_by_key[l_key] = l_label;
-            lanes.append({"key": l_key, "label": l_label});
-        }
-    }
-    crops: list[str] = [];
-    for m in markets {
-        for cname in (m["prices"] as dict[str, float]).keys() {
-            if cname not in crops { crops.append(cname); }
-        }
-    }
-
     eff_farmer = sel_farmer if sel_farmer in farmer_name_by_id else (farmers[0]["id"] as str if len(farmers) > 0 else "");
     eff_truck = sel_truck if sel_truck in truck_name_by_id else (trucks[0]["id"] as str if len(trucks) > 0 else "");
-    eff_lane = sel_lane if sel_lane in lane_label_by_key else (lanes[0]["key"] if len(lanes) > 0 else "");
-    eff_market = sel_market if sel_market in market_name_by_id else (markets[0]["id"] as str if len(markets) > 0 else "");
-    eff_crop = sel_crop if sel_crop in crops else (crops[0] if len(crops) > 0 else "");
 
     my_messages: list[dict[str, any]] = [];
     my_name = farmer_name_by_id[eff_farmer] if eff_farmer in farmer_name_by_id else "";
@@ -287,10 +240,6 @@ def:pub app -> JsxElement {
             event_report = {};
             removed_ids = [];
             added_ids = [];
-            crash_market_id = "";
-            crash_crop = "";
-            closed_lane = "";
-            farmer_note = "";
             scenario = "Baseline: every farmer ships alone";
             data_source = "real";
         } except Exception {
@@ -319,80 +268,29 @@ def:pub app -> JsxElement {
         running = False;
     }
 
-    async def run_event(kind: str, text_in: str) {
+    async def run_event() {
         if running { return; }
         running = True;
         error = "";
-        t_id = "";
-        e_id = "";
-        m_id = "";
-        crop_v = "";
-        label = "";
-        if kind == "truck_breakdown" {
-            t_id = eff_truck;
-            label = "Truck breakdown: " + (truck_name_by_id[t_id] if t_id in truck_name_by_id else "truck");
-        } elif kind == "road_closed" {
-            e_id = eff_lane;
-            label = "Road closed: " + (lane_label_by_key[e_id] if e_id in lane_label_by_key else "route");
-        } elif kind == "price_crash" {
-            m_id = eff_market;
-            crop_v = eff_crop;
-            label = "Price crash: " + pretty(crop_v) + " at " + (market_name_by_id[m_id] if m_id in market_name_by_id else "market");
-        } else {
-            label = "New harvest logged";
-        }
+        t_id = eff_truck;
+        label = "Truck breakdown: " + (truck_name_by_id[t_id] if t_id in truck_name_by_id else "truck");
         try {
-            res = await fetch_event(kind, t_id, e_id, m_id, crop_v, text_in);
+            res = await fetch_event("truck_breakdown", t_id, "", "", "", "");
             dd = res["diff"] as dict[str, any];
             notes_list = dd["notes"] as list[str];
-            # logic.apply_replan_event() writes this exact note for any event
-            # type it doesn't implement yet (currently every type except
-            # "truck_breakdown"); detecting it here - rather than trusting
-            # the response to mean "this really happened" - is what stops the
-            # UI from faking an effect the backend never applied.
-            not_handled = len(notes_list) > 0 and "is not handled yet" in notes_list[0];
-            if not_handled {
-                messages = [];
-                event_report = {"title": label, "source": "unhandled", "explanation": notes_list[0], "notes": []};
-            } else {
-                state = res["state"] as dict[str, any];
-                score = res["score"] as dict[str, any];
-                messages = res["messages"] as list[dict[str, any]];
-                removed_ids = dd["removedRouteIds"] as list[str];
-                added_ids = dd["addedRouteIds"] as list[str];
-                event_report = {"title": label, "source": "live", "explanation": res["explanation"] as str, "notes": notes_list};
-                data_source = "real";
-                crash_market_id = m_id if kind == "price_crash" else crash_market_id;
-                crash_crop = crop_v if kind == "price_crash" else crash_crop;
-                closed_lane = e_id if kind == "road_closed" else closed_lane;
-            }
+            state = res["state"] as dict[str, any];
+            score = res["score"] as dict[str, any];
+            messages = res["messages"] as list[dict[str, any]];
+            removed_ids = dd["removedRouteIds"] as list[str];
+            added_ids = dd["addedRouteIds"] as list[str];
+            event_report = {"title": label, "explanation": res["explanation"] as str, "notes": notes_list};
+            data_source = "real";
             scenario = label;
         } except Exception {
             error = "That event could not be applied. Press Reset and try again.";
             event_report = {};
         }
         running = False;
-    }
-
-    def set_event_kind(kind: str) {
-        event_kind = kind;
-    }
-
-    async def send_farmer_harvest() {
-        if len(farmer_text.strip()) == 0 { return; }
-        name = farmer_name_by_id[eff_farmer] if eff_farmer in farmer_name_by_id else "";
-        await run_event("new_harvest", name + ": " + farmer_text);
-        farmer_text = "";
-        if error {
-            farmer_note = "";
-        } elif event_report and event_report["source"] == "live" {
-            farmer_note = t["sent"];
-        } else {
-            # "new_harvest" isn't implemented by the backend yet (see
-            # run_event's not_handled check) - no pickup is actually
-            # planned, so don't claim one is.
-            farmer_note = "Preview only: harvest intake is not connected in this demo.";
-        }
     }
 
     # ---------- view ----------
@@ -476,38 +374,14 @@ def:pub app -> JsxElement {
                         <button onClick={lambda (e: MouseEvent) { run_merge(); }} disabled={running} style={{"padding": "11px 18px", "backgroundColor": C["primary"], "color": "#FFFFFF", "border": "1px solid " + C["primary"], "borderRadius": "10px", "fontSize": "14px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{"Working…" if running else "Merge routes"}</button>
                       </div>
                       <div style={{"padding": "16px", "backgroundColor": C["surface2"], "border": "1px solid " + C["border"], "borderRadius": "12px"}}>
-                        <div style={small_label}>2 · Simulate a disruption</div>
-                        <div style={{"display": "flex", "gap": "6px", "flexWrap": "wrap", "margin": "10px 0 12px"}}>
-                          {for tab in EVENT_TABS {
-                            active = event_kind == tab["type"];
-                            <button key={tab["type"]} onClick={lambda (e: MouseEvent) { set_event_kind(tab["type"]); }} style={{"padding": "7px 12px", "borderRadius": "999px", "fontSize": "13px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit", "border": "1px solid " + (C["primary"] if active else C["borderStrong"]), "backgroundColor": C["primary"] if active else C["surface"], "color": "#FFFFFF" if active else C["text"]}}>{tab["label"]}</button>
-                          }}
-                        </div>
-                        {if event_kind == "truck_breakdown" {
+                        <div style={small_label}>2 · Simulate a truck breakdown</div>
+                        <div style={{"marginTop": "10px"}}>
                           <select value={eff_truck} onChange={lambda (e: ChangeEvent) { sel_truck = e.target.value; }} style={field}>
                             {for tr in trucks { <option key={tr["id"] as str} value={tr["id"] as str}>{tr["name"]} · {fmt_int(tr["capacityKg"] as float)} kg</option> }}
                           </select>
-                        }}
-                        {if event_kind == "road_closed" {
-                          <select value={eff_lane} onChange={lambda (e: ChangeEvent) { sel_lane = e.target.value; }} style={field}>
-                            {for ln in lanes { <option key={ln["key"]} value={ln["key"]}>{ln["label"]}</option> }}
-                          </select>
-                        }}
-                        {if event_kind == "price_crash" {
-                          <div style={{"display": "flex", "gap": "8px", "flexWrap": "wrap"}}>
-                            <select value={eff_market} onChange={lambda (e: ChangeEvent) { sel_market = e.target.value; }} style={{"flex": "1", "minWidth": "150px", "padding": "10px 12px", "border": "1px solid " + C["borderStrong"], "borderRadius": "10px", "fontSize": "14px", "fontFamily": "inherit", "backgroundColor": C["surface"], "color": C["text"]}}>
-                              {for mk in markets { <option key={mk["id"] as str} value={mk["id"] as str}>{mk["name"]}</option> }}
-                            </select>
-                            <select value={eff_crop} onChange={lambda (e: ChangeEvent) { sel_crop = e.target.value; }} style={{"flex": "1", "minWidth": "120px", "padding": "10px 12px", "border": "1px solid " + C["borderStrong"], "borderRadius": "10px", "fontSize": "14px", "fontFamily": "inherit", "backgroundColor": C["surface"], "color": C["text"]}}>
-                              {for cr in crops { <option key={cr} value={cr}>{pretty(cr)}</option> }}
-                            </select>
-                          </div>
-                        }}
-                        {if event_kind == "new_harvest" {
-                          <textarea value={harvest_text} onChange={lambda (e: ChangeEvent) { harvest_text = e.target.value; }} rows={2} placeholder="e.g. 80kg beans near Matale, ready in 2 hours" style={field}></textarea>
-                        }}
+                        </div>
                         <div style={{"marginTop": "12px"}}>
-                          <button onClick={lambda (e: MouseEvent) { run_event(event_kind, harvest_text); }} disabled={running} style={{"padding": "10px 16px", "backgroundColor": C["text"], "color": "#FFFFFF", "border": "1px solid " + C["text"], "borderRadius": "10px", "fontSize": "14px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{"Working…" if running else "Run event"}</button>
+                          <button onClick={lambda (e: MouseEvent) { run_event(); }} disabled={running} style={{"padding": "10px 16px", "backgroundColor": C["text"], "color": "#FFFFFF", "border": "1px solid " + C["text"], "borderRadius": "10px", "fontSize": "14px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{"Working…" if running else "Run event"}</button>
                         </div>
                       </div>
                     </div>
@@ -560,13 +434,12 @@ def:pub app -> JsxElement {
                         r_plan = plan_by_route[rid] if rid in plan_by_route else {};
                         is_removed = rid in removed_ids;
                         is_added = rid in added_ids;
-                        is_closed = (r_hub + "->" + r_mkt) == closed_lane;
                         accent = C["red"] if is_removed else C["primary"] if is_added else (truck_color_by_id[r_truck] if r_truck in truck_color_by_id else C["border"]);
                         <div key={rid} style={{"display": "flex", "gap": "14px", "padding": "14px 22px 14px 0", "borderBottom": "1px solid " + C["border"], "alignItems": "stretch"}}>
                           <div style={{"width": "4px", "borderRadius": "0 4px 4px 0", "backgroundColor": accent, "flexShrink": "0"}}></div>
                           <div style={{"flex": "1", "minWidth": "0"}}>
                             <div style={{"display": "flex", "justifyContent": "space-between", "gap": "10px", "flexWrap": "wrap"}}>
-                              <div style={{"fontWeight": "600"}}>{("Shared truck · " + str(r_n) + " farmers") if r_n > 1 else "Solo trip · 1 farmer"}<span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "500", "color": C["subtle"]}}>{rid}</span>{if is_closed { <span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "600", "color": C["red"], "backgroundColor": C["redSoft"], "padding": "2px 8px", "borderRadius": "999px"}}>road closed</span> }}{if is_added { <span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "600", "color": C["primaryDark"], "backgroundColor": C["primarySoft"], "padding": "2px 8px", "borderRadius": "999px"}}>new</span> }}{if is_removed { <span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "600", "color": C["red"], "backgroundColor": C["redSoft"], "padding": "2px 8px", "borderRadius": "999px"}}>removed</span> }}</div>
+                              <div style={{"fontWeight": "600"}}>{("Shared truck · " + str(r_n) + " farmers") if r_n > 1 else "Solo trip · 1 farmer"}<span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "500", "color": C["subtle"]}}>{rid}</span>{if is_added { <span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "600", "color": C["primaryDark"], "backgroundColor": C["primarySoft"], "padding": "2px 8px", "borderRadius": "999px"}}>new</span> }}{if is_removed { <span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "600", "color": C["red"], "backgroundColor": C["redSoft"], "padding": "2px 8px", "borderRadius": "999px"}}>removed</span> }}</div>
                               <div style={{"fontSize": "13px", "color": C["muted"]}}>{truck_name_by_id[r_truck] if r_truck in truck_name_by_id else "Truck"}</div>
                             </div>
                             <div style={{"fontSize": "13px", "color": C["muted"], "marginTop": "2px"}}>{names_txt}</div>
@@ -591,14 +464,12 @@ def:pub app -> JsxElement {
                           </div>
                         }}
                         {if event_report {
-                          <div style={{"marginTop": "14px" if len(steps) > 0 else "0", "padding": "14px 16px", "borderRadius": "12px", "backgroundColor": C["surface2"] if event_report["source"] == "live" else C["amberSoft"], "border": "1px solid " + (C["border"] if event_report["source"] == "live" else C["amber"])}}>
+                          <div style={{"marginTop": "14px" if len(steps) > 0 else "0", "padding": "14px 16px", "borderRadius": "12px", "backgroundColor": C["surface2"], "border": "1px solid " + C["border"]}}>
                             <div style={{"display": "flex", "justifyContent": "space-between", "gap": "8px", "flexWrap": "wrap", "alignItems": "center"}}>
                               <strong style={{"fontSize": "14px"}}>{event_report["title"]}</strong>
-                              <span style={{"fontSize": "12px", "fontWeight": "700", "color": C["primaryDark"] if event_report["source"] == "live" else C["amber"]}}>{"LIVE ENGINE" if event_report["source"] == "live" else "NOT CONNECTED YET"}</span>
                             </div>
                             {for note in (event_report["notes"] as list[str]) { <p key={note} style={{"margin": "8px 0 0", "fontSize": "13px", "color": C["muted"]}}>{note}</p> }}
                             <p style={{"margin": "8px 0 0", "fontSize": "14px"}}>{event_report["explanation"]}</p>
-                            {if event_report["source"] != "live" { <p style={{"margin": "8px 0 0", "fontSize": "12px", "color": C["amber"]}}>This event type isn't implemented in the backend yet, so nothing was changed. The routes, fleet and scores above are exactly as they were.</p> }}
                           </div>
                         }}
                       </div>
@@ -631,8 +502,7 @@ def:pub app -> JsxElement {
                             </div>
                             <div style={{"display": "flex", "gap": "6px", "flexWrap": "wrap", "marginTop": "6px"}}>
                               {for cn in mk_prices.keys() {
-                                crashed = (mkid == crash_market_id) and (cn == crash_crop);
-                                <span key={cn} style={{"fontSize": "12px", "padding": "3px 9px", "borderRadius": "999px", "backgroundColor": C["redSoft"] if crashed else C["surface2"], "border": "1px solid " + (C["red"] if crashed else C["border"]), "color": C["red"] if crashed else C["muted"], "fontWeight": "600" if crashed else "500"}}>{pretty(cn)} {str(mk_prices[cn])}{" ▼ crashed" if crashed else ""}</span>
+                                <span key={cn} style={{"fontSize": "12px", "padding": "3px 9px", "borderRadius": "999px", "backgroundColor": C["surface2"], "border": "1px solid " + C["border"], "color": C["muted"], "fontWeight": "500"}}>{pretty(cn)} {str(mk_prices[cn])}</span>
                               }}
                             </div>
                           </div>
@@ -742,17 +612,6 @@ def:pub app -> JsxElement {
                             </div>
                           }}
                           {if len(my_messages) == 0 { <p style={{"margin": "10px 0 0", "color": C["muted"], "fontSize": "16px"}}>{t["none"]}</p> }}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{"marginTop": "14px"}}>
-                      <div style={card}>
-                        <div style={{"padding": "20px 22px"}}>
-                          <div style={small_label}>{t["log"]}</div>
-                          <textarea value={farmer_text} onChange={lambda (e: ChangeEvent) { farmer_text = e.target.value; }} rows={3} placeholder={t["ph"]} style={{"width": "100%", "marginTop": "10px", "padding": "12px 14px", "border": "1px solid " + C["borderStrong"], "borderRadius": "12px", "fontSize": "17px", "fontFamily": "inherit", "boxSizing": "border-box"}}></textarea>
-                          <button onClick={lambda (e: MouseEvent) { send_farmer_harvest(); }} disabled={running} style={{"marginTop": "12px", "width": "100%", "padding": "14px", "backgroundColor": C["primary"], "color": "#FFFFFF", "border": "none", "borderRadius": "12px", "fontSize": "17px", "fontWeight": "650", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{t["send"]}</button>
-                          {if farmer_note { <p style={{"margin": "12px 0 0", "color": C["primaryDark"], "fontSize": "16px", "fontWeight": "600"}}>{farmer_note}</p> }}
                         </div>
                       </div>
                     </div>
