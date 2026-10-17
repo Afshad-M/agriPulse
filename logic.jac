@@ -56,7 +56,8 @@ obj BaselineRoute {
         hours: float,
         spoilage_pct: float,
         expected_income: float,
-        truck_cost: float;
+        truck_cost: float,
+        harvest_ids: list[str] = [];
 }
 
 obj MarketRoute {
@@ -95,6 +96,37 @@ def _truck_capacity(t: Truck) -> float {
     return t.capacity_kg;
 }
 
+# Resolves the Farmer that owns `harvest`: Harvest.farmer_id (set by
+# api.jac's seed loader and by the new_harvest handler) when present,
+# else the farmer at the SAME POSITION in `farmers` as `harvest` is in
+# `harvests` - the original pairing convention (data.jac: "SEED_HARVESTS[i]
+# belongs to SEED_FARMERS[i]"), kept as a fallback so fixtures/tests that
+# build a Harvest without farmer_id (one harvest per farmer, in creation
+# order) keep working unchanged.
+def _farmer_for_harvest(harvest: Harvest, harvests: list[Harvest], farmers: list[Farmer]) -> Farmer | None {
+    if harvest.farmer_id != "" {
+        try {
+            f = jobj(harvest.farmer_id);
+        } except Exception {
+            f = None;
+        }
+        if f is not None and isinstance(f, Farmer) {
+            return f;
+        }
+    }
+    i = 0;
+    for h in harvests {
+        if jid(h) == jid(harvest) {
+            if i < len(farmers) {
+                return farmers[i];
+            }
+            return None;
+        }
+        i += 1;
+    }
+    return None;
+}
+
 # Every harvest ships SOLO on the smallest truck that fits it. elapsed =
 # BASELINE.waiting_hours + the harvest's hub's fastest open hub->market
 # travel hours (the farmer->hub leg has no travel-time data anywhere in
@@ -106,7 +138,10 @@ def _truck_capacity(t: Truck) -> float {
 # the farmer->hub leg is a flat assumed constant, not real data - see
 # docs/assumptions.md). Reads `root` directly - the graph load_seed()
 # built - rather than taking it as parameters, per the function/no-visit
-# shape rule in jac-sv-endpoints.
+# shape rule in jac-sv-endpoints. Iterates HARVESTS (not farmer<->harvest
+# pairs) so a farmer with more than one Harvest (new_harvest) gets one
+# baseline route per harvest, each tagged with its own harvest_ids - see
+# _farmer_for_harvest above and docs/assumptions.md.
 def compute_baseline() -> list[BaselineRoute] {
     farmers = [root -->][?:Farmer];
     harvests = [root -->][?:Harvest];
@@ -114,7 +149,11 @@ def compute_baseline() -> list[BaselineRoute] {
 
     routes: list[BaselineRoute] = [];
     i = 0;
-    for (farmer, harvest) in zip(farmers, harvests) {
+    for harvest in harvests {
+        farmer = _farmer_for_harvest(harvest, harvests, farmers);
+        if farmer is None {
+            continue;
+        }
         hub_list = [farmer ->:DeliversTo:->];
         if len(hub_list) == 0 {
             continue;
@@ -137,6 +176,7 @@ def compute_baseline() -> list[BaselineRoute] {
             id=f"r{i}",
             truck_id=jid(truck),
             farmer_ids=[jid(farmer)],
+            harvest_ids=[jid(harvest)],
             hub_ids=[jid(hub)],
             market_id=jid(leg.market),
             distance_km=distance_km,
@@ -225,23 +265,21 @@ def _route_by_id(routes: list[BaselineRoute], route_id: str) -> BaselineRoute | 
     return None;
 }
 
-# farmer jid -> that farmer's single Harvest. Built once per merge_routes()
-# call (same association compute_baseline() itself relies on: `[root-->]`
-# filtered by type preserves SEED_FARMERS/SEED_HARVESTS' parallel order).
-def _harvest_by_farmer_id() -> dict[str, Harvest] {
-    farmers = [root -->][?:Farmer];
-    harvests = [root -->][?:Harvest];
+# harvest jid -> that Harvest. Keyed by harvest id (not farmer id) so a
+# farmer with more than one Harvest (new_harvest) is never ambiguous -
+# every BaselineRoute carries the exact harvest_ids it was built from.
+def _harvest_by_id() -> dict[str, Harvest] {
     out: dict[str, Harvest] = {};
-    for (farmer, harvest) in zip(farmers, harvests) {
-        out[jid(farmer)] = harvest;
+    for h in [root -->][?:Harvest] {
+        out[jid(h)] = h;
     }
     return out;
 }
 
-def _route_kg(route: BaselineRoute, harvest_by_farmer: dict[str, Harvest]) -> float {
+def _route_kg(route: BaselineRoute, harvest_by_id: dict[str, Harvest]) -> float {
     total = 0.0;
-    for fid in route.farmer_ids {
-        total += harvest_by_farmer[fid].quantity_kg;
+    for hid in route.harvest_ids {
+        total += harvest_by_id[hid].quantity_kg;
     }
     return total;
 }
@@ -357,14 +395,14 @@ obj RouteScore {
 }
 
 def _score_route_from_leg(
-    farmer_ids: list[str], leg: MarketRoute, truck: Truck, harvest_by_farmer: dict[str, Harvest],
+    harvest_ids: list[str], leg: MarketRoute, truck: Truck, harvest_by_id: dict[str, Harvest],
 ) -> RouteScore {
     elapsed = MERGED.waiting_hours + leg.hours;
     total_income = 0.0;
     total_kg = 0.0;
     spoiled_kg = 0.0;
-    for fid in farmer_ids {
-        harvest = harvest_by_farmer[fid];
+    for hid in harvest_ids {
+        harvest = harvest_by_id[hid];
         price = leg.market.prices.get(harvest.crop, 0.0);
         score = score_cargo(harvest.quantity_kg, price, elapsed, harvest.shelf_life_hours, 0.0);
         total_income += score.revenue;
@@ -395,11 +433,12 @@ def _dedupe(ids: list[str]) -> list[str] {
 # (doesn't affect delta); the real id (m1, m2, ...) is assigned on apply.
 def _try_merge(
     a: BaselineRoute, b: BaselineRoute, trucks: list[Truck],
-    harvest_by_farmer: dict[str, Harvest], route_id: str,
+    harvest_by_id: dict[str, Harvest], route_id: str,
 ) -> BaselineRoute | None {
     combined_farmer_ids = a.farmer_ids + b.farmer_ids;
+    combined_harvest_ids = a.harvest_ids + b.harvest_ids;
     combined_hub_ids = a.hub_ids + b.hub_ids;
-    combined_kg = _route_kg(a, harvest_by_farmer) + _route_kg(b, harvest_by_farmer);
+    combined_kg = _route_kg(a, harvest_by_id) + _route_kg(b, harvest_by_id);
 
     truck = _smallest_fitting_truck_or_none(trucks, combined_kg);
     if truck is None {
@@ -411,12 +450,13 @@ def _try_merge(
         return None;
     }
 
-    score = _score_route_from_leg(combined_farmer_ids, leg, truck, harvest_by_farmer);
+    score = _score_route_from_leg(combined_harvest_ids, leg, truck, harvest_by_id);
 
     return BaselineRoute(
         id=route_id,
         truck_id=jid(truck),
         farmer_ids=combined_farmer_ids,
+        harvest_ids=combined_harvest_ids,
         hub_ids=_dedupe(combined_hub_ids),
         market_id=a.market_id,
         distance_km=score.distance_km,
@@ -430,7 +470,7 @@ def _try_merge(
 # Every pair of distinct routes sharing a marketId whose combined kg fits
 # some available truck. O(n^2) over routes, fine at this seed's scale.
 def _build_merge_candidates(
-    routes: list[BaselineRoute], trucks: list[Truck], harvest_by_farmer: dict[str, Harvest],
+    routes: list[BaselineRoute], trucks: list[Truck], harvest_by_id: dict[str, Harvest],
 ) -> list[MergeCandidate] {
     candidates: list[MergeCandidate] = [];
     n = len(routes);
@@ -441,10 +481,10 @@ def _build_merge_candidates(
             a = routes[i];
             b = routes[j];
             if a.market_id == b.market_id {
-                merged = _try_merge(a, b, trucks, harvest_by_farmer, "");
+                merged = _try_merge(a, b, trucks, harvest_by_id, "");
                 if merged is not None {
-                    kg_a = _route_kg(a, harvest_by_farmer);
-                    kg_b = _route_kg(b, harvest_by_farmer);
+                    kg_a = _route_kg(a, harvest_by_id);
+                    kg_b = _route_kg(b, harvest_by_id);
                     weighted_before = (kg_a * a.spoilage_pct + kg_b * b.spoilage_pct) / (kg_a + kg_b);
                     candidates.append(MergeCandidate(
                         idA=a.id, idB=b.id,
@@ -480,9 +520,9 @@ def _persist_current_plan(routes: list[BaselineRoute]) -> None {
     for r in routes {
         plan = Plan(
             status="current", route_id=r.id, truck_id=r.truck_id,
-            farmer_ids=r.farmer_ids, hub_ids=r.hub_ids, market_id=r.market_id,
-            distance_km=r.distance_km, hours=r.hours, spoilage_pct=r.spoilage_pct,
-            expected_income=r.expected_income, truck_cost=r.truck_cost,
+            farmer_ids=r.farmer_ids, harvest_ids=r.harvest_ids, hub_ids=r.hub_ids,
+            market_id=r.market_id, distance_km=r.distance_km, hours=r.hours,
+            spoilage_pct=r.spoilage_pct, expected_income=r.expected_income, truck_cost=r.truck_cost,
         );
         root ++> plan;
         truck = jobj(r.truck_id);
@@ -503,14 +543,14 @@ def _persist_current_plan(routes: list[BaselineRoute]) -> None {
 def run_merge_routes() -> list[MergeStepRecord] {
     routes: list[BaselineRoute] = compute_baseline();
     trucks = [root -->][?:Truck];
-    harvest_by_farmer = _harvest_by_farmer_id();
+    harvest_by_id = _harvest_by_id();
 
     steps: list[MergeStepRecord] = [];
     max_passes = len(routes);
     merge_count = 0;
     pass_no = 0;
     while pass_no < max_passes {
-        candidates = _build_merge_candidates(routes, trucks, harvest_by_farmer);
+        candidates = _build_merge_candidates(routes, trucks, harvest_by_id);
         best = pick_best_merge(candidates);
         if best is None {
             break;
@@ -524,7 +564,7 @@ def run_merge_routes() -> list[MergeStepRecord] {
 
         merge_count += 1;
         new_id = f"m{merge_count}";
-        merged = _try_merge(route_a, route_b, trucks, harvest_by_farmer, new_id);
+        merged = _try_merge(route_a, route_b, trucks, harvest_by_id, new_id);
         if merged is None {
             break;
         }
@@ -657,8 +697,8 @@ def _routes_from_plans() -> list[BaselineRoute] {
     plans = [root -->][?:Plan];
     return [
         BaselineRoute(
-            id=p.route_id, truck_id=p.truck_id, farmer_ids=p.farmer_ids, hub_ids=p.hub_ids,
-            market_id=p.market_id, distance_km=p.distance_km, hours=p.hours,
+            id=p.route_id, truck_id=p.truck_id, farmer_ids=p.farmer_ids, harvest_ids=p.harvest_ids,
+            hub_ids=p.hub_ids, market_id=p.market_id, distance_km=p.distance_km, hours=p.hours,
             spoilage_pct=p.spoilage_pct, expected_income=p.expected_income, truck_cost=p.truck_cost,
         )
         for p in plans
@@ -668,11 +708,11 @@ def _routes_from_plans() -> list[BaselineRoute] {
 # kg-weighted spoilagePct (0-100) across a list of routes - same shape as
 # api.jac's _aggregate_score_from_routes, but over BaselineRoute directly
 # (no RouteInfo/PlanInfo round-trip needed inside logic.jac).
-def _kg_weighted_spoilage(routes: list[BaselineRoute], harvest_by_farmer: dict[str, Harvest]) -> float {
+def _kg_weighted_spoilage(routes: list[BaselineRoute], harvest_by_id: dict[str, Harvest]) -> float {
     total_kg = 0.0;
     spoiled_kg = 0.0;
     for r in routes {
-        kg = _route_kg(r, harvest_by_farmer);
+        kg = _route_kg(r, harvest_by_id);
         total_kg += kg;
         spoiled_kg += kg * (r.spoilage_pct / 100.0);
     }
@@ -688,7 +728,7 @@ def _kg_weighted_spoilage(routes: list[BaselineRoute], harvest_by_farmer: dict[s
 # just carries more farmers. None if no such route exists.
 def _try_attach_to_existing_route(
     orphan: BaselineRoute, candidates: list[BaselineRoute], trucks_by_id: dict[str, Truck],
-    harvest_by_farmer: dict[str, Harvest],
+    harvest_by_id: dict[str, Harvest],
 ) -> BaselineRoute | None {
     for target in sorted(candidates, key=_route_id_key) {
         if target.market_id != orphan.market_id {
@@ -698,7 +738,7 @@ def _try_attach_to_existing_route(
         if truck is None {
             continue;
         }
-        combined_kg = _route_kg(target, harvest_by_farmer) + _route_kg(orphan, harvest_by_farmer);
+        combined_kg = _route_kg(target, harvest_by_id) + _route_kg(orphan, harvest_by_id);
         if combined_kg > truck.capacity_kg {
             continue;
         }
@@ -708,9 +748,11 @@ def _try_attach_to_existing_route(
             continue;
         }
         combined_farmer_ids = target.farmer_ids + orphan.farmer_ids;
-        score = _score_route_from_leg(combined_farmer_ids, leg, truck, harvest_by_farmer);
+        combined_harvest_ids = target.harvest_ids + orphan.harvest_ids;
+        score = _score_route_from_leg(combined_harvest_ids, leg, truck, harvest_by_id);
         return BaselineRoute(
-            id=target.id, truck_id=target.truck_id, farmer_ids=combined_farmer_ids, hub_ids=combined_hub_ids,
+            id=target.id, truck_id=target.truck_id, farmer_ids=combined_farmer_ids,
+            harvest_ids=combined_harvest_ids, hub_ids=combined_hub_ids,
             market_id=target.market_id, distance_km=score.distance_km, hours=score.hours,
             spoilage_pct=score.spoilage_pct, expected_income=score.expected_income, truck_cost=score.truck_cost,
         );
@@ -779,21 +821,21 @@ def apply_truck_breakdown_event(truck_id: str | None) -> ReplanOutcome {
     truck_obj.status = "broken";
     run_merge_routes();
     routes = _routes_from_plans();
-    harvest_by_farmer = _harvest_by_farmer_id();
+    harvest_by_id = _harvest_by_id();
     all_trucks = _all_trucks();
     trucks_by_id: dict[str, Truck] = {};
     for t in all_trucks {
         trucks_by_id[jid(t)] = t;
     }
 
-    old_spoilage = _kg_weighted_spoilage(routes, harvest_by_farmer);
+    old_spoilage = _kg_weighted_spoilage(routes, harvest_by_id);
     # Biggest route first: it gets first pick of the free replacement trucks,
     # so a large route is never starved by smaller ones claiming the spares
     # ahead of it. Ties (equal kg) break on the lowest route id, so the
     # order - and therefore the whole outcome - stays deterministic.
     affected = sorted(
         [r for r in routes if r.truck_id == truck_id],
-        key=lambda (r: BaselineRoute) { (-_route_kg(r, harvest_by_farmer), r.id) },
+        key=lambda (r: BaselineRoute) { (-_route_kg(r, harvest_by_id), r.id) },
     );
 
     if len(affected) == 0 {
@@ -823,7 +865,7 @@ def apply_truck_breakdown_event(truck_id: str | None) -> ReplanOutcome {
 
     for route in affected {
         removed_ids.append(route.id);
-        route_kg = _route_kg(route, harvest_by_farmer);
+        route_kg = _route_kg(route, harvest_by_id);
         handled = False;
 
         free_trucks = [_truck_info(t) for t in all_trucks if t.status != "broken" and jid(t) not in used_truck_ids];
@@ -832,12 +874,12 @@ def apply_truck_breakdown_event(truck_id: str | None) -> ReplanOutcome {
             new_truck = trucks_by_id[new_truck_id];
             leg = _merged_leg(route.hub_ids, route.market_id);
             if leg is not None {
-                score = _score_route_from_leg(route.farmer_ids, leg, new_truck, harvest_by_farmer);
+                score = _score_route_from_leg(route.harvest_ids, leg, new_truck, harvest_by_id);
                 x_counter += 1;
                 new_id = f"x{x_counter}";
                 working_routes.append(BaselineRoute(
-                    id=new_id, truck_id=new_truck_id, farmer_ids=route.farmer_ids, hub_ids=route.hub_ids,
-                    market_id=route.market_id, distance_km=score.distance_km, hours=score.hours,
+                    id=new_id, truck_id=new_truck_id, farmer_ids=route.farmer_ids, harvest_ids=route.harvest_ids,
+                    hub_ids=route.hub_ids, market_id=route.market_id, distance_km=score.distance_km, hours=score.hours,
                     spoilage_pct=score.spoilage_pct, expected_income=score.expected_income, truck_cost=score.truck_cost,
                 ));
                 added_ids.append(new_id);
@@ -854,7 +896,7 @@ def apply_truck_breakdown_event(truck_id: str | None) -> ReplanOutcome {
         }
 
         if not handled {
-            target = _try_attach_to_existing_route(route, working_routes, trucks_by_id, harvest_by_farmer);
+            target = _try_attach_to_existing_route(route, working_routes, trucks_by_id, harvest_by_id);
             if target is not None {
                 working_routes = [target if r.id == target.id else r for r in working_routes];
                 sentences.append(
@@ -881,7 +923,7 @@ def apply_truck_breakdown_event(truck_id: str | None) -> ReplanOutcome {
     }
 
     _persist_current_plan(working_routes);
-    new_spoilage = _kg_weighted_spoilage(working_routes, harvest_by_farmer);
+    new_spoilage = _kg_weighted_spoilage(working_routes, harvest_by_id);
 
     if unserved_farmer_count == 0 {
         sentences.append("No farmers are unserved.");

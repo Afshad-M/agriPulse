@@ -10,7 +10,12 @@ code is unaffected) added so the real baseline computation (logic.jac) has
 everything it needs on the graph itself rather than re-deriving it from
 data.jac's lookup tables at read time. Plan's additive fields do the same
 job for the "current plan" (baseline or merged routes) that merge_routes()
-persists - see docs/assumptions.md. Truck.status is additive too, but is
+persists - see docs/assumptions.md. Harvest.farmer_id/ready_hour and
+Plan.harvest_ids/BaselineRoute.harvest_ids (logic.jac) are additive too -
+they let a farmer carry more than one Harvest (e.g. one reported live via
+the "new_harvest" event) while every kg/spoilage computation still keys
+off the exact Harvest involved instead of guessing from farmer id alone.
+Truck.status is additive too, but is
 never seeded - it starts "available" and is only ever flipped to "broken"
 by replan_on_event()'s truck_breakdown handling (logic.jac); load_seed()
 resets it by rebuilding Truck nodes from scratch.
@@ -27,7 +32,9 @@ node Harvest {
     has crop: str,
         quantity_kg: float = 0.0,
         harvested_at: str = "",
-        shelf_life_hours: float = 0.0;
+        shelf_life_hours: float = 0.0,
+        farmer_id: str = "",
+        ready_hour: float = 0.0;
 }
 
 node Hub {
@@ -61,6 +68,7 @@ node Plan {
         route_id: str = "",
         truck_id: str = "",
         farmer_ids: list[str] = [],
+        harvest_ids: list[str] = [],
         hub_ids: list[str] = [],
         market_id: str = "",
         distance_km: float = 0.0,

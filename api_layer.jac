@@ -112,9 +112,10 @@ def:pub fetch_merge() -> dict[str, any] {
 }
 
 # Event.notes is a plain str in the contract; the UI renders a list, so a
-# non-empty note becomes a one-item list.
+# non-empty note becomes a one-item list. farmer_id is additive (only
+# "new_harvest" uses it - CONTRACT v1's Event.farmerId).
 def:pub fetch_event(event_type: str, truck_id: str, edge_id: str, market_id: str,
-                    crop: str, text: str) -> dict[str, any] {
+                    crop: str, text: str, farmer_id: str = "") -> dict[str, any] {
     event = Event(
         type=event_type,
         truckId=truck_id if truck_id else None,
@@ -122,6 +123,7 @@ def:pub fetch_event(event_type: str, truck_id: str, edge_id: str, market_id: str
         marketId=market_id if market_id else None,
         crop=crop if crop else None,
         text=text if text else None,
+        farmerId=farmer_id if farmer_id else None,
     );
     result = replan_on_event(event);
     notes = [result.diff.notes] if result.diff.notes else [];
