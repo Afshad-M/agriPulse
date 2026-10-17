@@ -746,11 +746,12 @@ def _breakdown_message_text(language: str, outcome: str) -> str {
 # truck_breakdown: always rebuilds the current plan from a fresh
 # run_merge_routes() first (so two calls with the same event are
 # identical regardless of what an earlier replan call did), marks the
-# truck broken, then resolves each route it was serving in sorted id
-# order: replacement truck (pick_replacement_truck) -> attach to another
-# route with spare capacity on the same market -> else drop the route and
-# report its farmers unserved. See docs/assumptions.md for the full
-# write-up.
+# truck broken, then resolves each route it was serving in descending-kg
+# order (ties broken by the lowest route id - see the `affected` sort
+# below): replacement truck (pick_replacement_truck) -> attach to another
+# route (already-reassigned or untouched) with spare capacity on the same
+# market -> else drop the route and report its farmers unserved. See
+# docs/assumptions.md for the full write-up.
 def apply_truck_breakdown_event(truck_id: str | None) -> ReplanOutcome {
     if truck_id is None {
         note = "Truck breakdown event is missing a truckId.";
@@ -786,7 +787,14 @@ def apply_truck_breakdown_event(truck_id: str | None) -> ReplanOutcome {
     }
 
     old_spoilage = _kg_weighted_spoilage(routes, harvest_by_farmer);
-    affected = sorted([r for r in routes if r.truck_id == truck_id], key=_route_id_key);
+    # Biggest route first: it gets first pick of the free replacement trucks,
+    # so a large route is never starved by smaller ones claiming the spares
+    # ahead of it. Ties (equal kg) break on the lowest route id, so the
+    # order - and therefore the whole outcome - stays deterministic.
+    affected = sorted(
+        [r for r in routes if r.truck_id == truck_id],
+        key=lambda (r: BaselineRoute) { (-_route_kg(r, harvest_by_farmer), r.id) },
+    );
 
     if len(affected) == 0 {
         _persist_current_plan(routes);
@@ -861,9 +869,10 @@ def apply_truck_breakdown_event(truck_id: str | None) -> ReplanOutcome {
 
         if not handled {
             unserved_farmer_count += len(route.farmer_ids);
+            farmer_names = [_farmer_name(fid) for fid in route.farmer_ids];
             sentences.append(
                 f"Route {route.id} ({len(route.farmer_ids)} farmers, {route_kg:.0f} kg) removed - no spare truck "
-                + f"or route capacity for farmer(s) {', '.join(route.farmer_ids)}; they are unserved."
+                + f"or route capacity for farmer(s) {', '.join(farmer_names)}; they are unserved."
             );
             for fid in route.farmer_ids {
                 farmer_outcome[fid] = "unserved";
