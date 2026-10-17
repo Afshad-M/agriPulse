@@ -31,6 +31,13 @@ watchdog = ">=3.0.0"
 
 [client]
 
+[jacpack]
+name = 'https___github_com_Afshad-M_agriPulse_git'
+description = 'Jac IDE snapshot for https___github_com_Afshad-M_agriPulse_git'
+
+[jachammer]
+project_id = "prj_01774d93c5794003aa2c427b0631f8eb"
+
 # Added by C (see .env.example). On jac 0.37.25 the old [plugins.byllm.model]
 # path from earlier docs no longer parses - byllm is a built-in capability,
 # configured with a top-level [byllm] table, and `jac install` pulls its
