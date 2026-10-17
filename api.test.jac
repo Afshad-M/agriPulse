@@ -330,3 +330,85 @@ test "truck_breakdown on the real seed: breaking the truck behind m1/m3/m6/m8 le
         assert message.isFallback;
     }
 }
+
+# replan_on_event's LLM hookup (explain()/farmer_message(), api.jac) is
+# exercised by every test above already, on the fallback path (no API key
+# in this environment - see .env.example/jac.toml's [byllm.model]), since
+# that is the only path `jac test` can run without network/secrets. This
+# test additionally builds its own tiny fixture (same convention as
+# logic.test.jac's apply_replan_event tests) with an UNTOUCHED third
+# farmer on a separate hub/market/truck, specifically to pin that
+# replan_on_event only ever builds a Message for an AFFECTED farmer - not
+# every farmer on the graph, which load_seed()'s fixed 12-farmer seed can't
+# by itself distinguish (see the test above: that breakdown happens to hit
+# all 12).
+test "replan_on_event: messages are scoped to affected farmers only" {
+    hub = Hub(name="Scoped Hub", capacity_kg=9999.0);
+    other_hub = Hub(name="Scoped Other Hub", capacity_kg=9999.0);
+    market = Market(name="Scoped Market", demand_kg=9999.0, prices={"tomato": 100.0});
+    other_market = Market(name="Scoped Other Market", demand_kg=9999.0, prices={"tomato": 100.0});
+    small_truck = Truck(plate="SCOPED-SMALL", capacity_kg=500.0, cost_per_km=10.0);
+    spare_truck = Truck(plate="SCOPED-SPARE", capacity_kg=2000.0, cost_per_km=20.0);
+    # Deliberately too small for farmer_a/b's kg (200/150) so
+    # _smallest_fitting_truck() (logic.jac) can never pick it for them -
+    # compute_baseline() picks the smallest-fitting truck GLOBALLY, with no
+    # concept of hub/market grouping, so without this farmer_c would tie
+    # with farmer_a/b for small_truck and get swept into the same breakdown.
+    untouched_truck = Truck(plate="SCOPED-UNTOUCHED", capacity_kg=80.0, cost_per_km=10.0);
+    farmer_a = Farmer(name="Scoped Farmer A", language="en");
+    farmer_b = Farmer(name="Scoped Farmer B", language="en");
+    farmer_c = Farmer(name="Scoped Farmer C", language="en");
+    harvest_a = Harvest(crop="tomato", quantity_kg=200.0, shelf_life_hours=72.0);
+    harvest_b = Harvest(crop="tomato", quantity_kg=150.0, shelf_life_hours=72.0);
+    harvest_c = Harvest(crop="tomato", quantity_kg=50.0, shelf_life_hours=72.0);
+
+    root ++> hub;
+    root ++> other_hub;
+    root ++> market;
+    root ++> other_market;
+    root ++> small_truck;
+    root ++> spare_truck;
+    root ++> untouched_truck;
+    root ++> farmer_a;
+    root ++> farmer_b;
+    root ++> farmer_c;
+    root ++> harvest_a;
+    root ++> harvest_b;
+    root ++> harvest_c;
+    hub +>:HubMarketRoute(distance_km=5.0, hours=0.2, open=True):+> market;
+    other_hub +>:HubMarketRoute(distance_km=5.0, hours=0.2, open=True):+> other_market;
+    farmer_a +>:DeliversTo():+> hub;
+    farmer_b +>:DeliversTo():+> hub;
+    farmer_c +>:DeliversTo():+> other_hub;
+
+    event = Event(type="truck_breakdown", truckId=jid(small_truck));
+    result = replan_on_event(event);
+
+    farmer_c_id = jid(farmer_c);
+    message_farmer_ids = [m.farmerId for m in result.messages];
+    assert farmer_c_id not in message_farmer_ids;   # untouched farmer gets no message
+    assert len(result.messages) == 2;                # only farmer_a and farmer_b were affected
+
+    for message in result.messages {
+        assert isinstance(message.farmerId, str);
+        assert isinstance(message.farmerName, str);
+        assert isinstance(message.language, str);
+        assert message.text.strip() != "";           # every message has non-empty text
+        assert message.isFallback;                    # no API key here - fallback path
+    }
+    assert isinstance(result.explanation, str);
+    assert result.explanation.strip() != "";
+
+    for p in [root -->][?:Plan] {
+        del p;
+    }
+    del [edge farmer_a ->:DeliversTo:-> hub];
+    del [edge farmer_b ->:DeliversTo:-> hub];
+    del [edge farmer_c ->:DeliversTo:-> other_hub];
+    del [edge hub ->:HubMarketRoute:-> market];
+    del [edge other_hub ->:HubMarketRoute:-> other_market];
+    del hub; del other_hub; del market; del other_market;
+    del small_truck; del spare_truck; del untouched_truck;
+    del farmer_a; del farmer_b; del farmer_c;
+    del harvest_a; del harvest_b; del harvest_c;
+}

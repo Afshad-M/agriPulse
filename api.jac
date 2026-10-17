@@ -25,7 +25,8 @@ import from data {
     CROP_SHELF_LIFE_HOURS, SEED_FARMER_RECORDS, SEED_HUB_RECORDS,
     SEED_MARKET_RECORDS, SEED_TRUCK_RECORDS,
 }
-import from logic { compute_baseline, BaselineRoute, run_merge_routes, apply_replan_event }
+import from logic { compute_baseline, BaselineRoute, run_merge_routes, apply_replan_event, ReplanOutcome }
+import from llm { explain, farmer_message, EXPLAIN_FALLBACK, FARMER_MESSAGE_FALLBACKS }
 
 # ---- Contract data types -----------------------------------------------
 
@@ -454,7 +455,156 @@ def:pub merge_routes() -> MergeRoutesResult {
     );
 }
 
+# ---- LLM hookup (owner: A - calls into llm.jac's by-llm functions, owner
+# C, without editing that file) --------------------------------------------
+# logic.jac stays deterministic (CLAUDE.md): apply_replan_event() already
+# computes a real explanation string and one template Message per AFFECTED
+# farmer (reassigned/attached/unserved), always isFallback=True. The helpers
+# below optionally upgrade that deterministic result with llm.explain() /
+# llm.farmer_message() - numbers still come entirely from this module/
+# logic.jac, never from the model - and fall back to the deterministic
+# text whenever the call raises, times out, or comes back empty. Both
+# llm.jac functions already swallow their own exceptions and return a
+# labelled fallback string; comparing against that exact sentinel (rather
+# than trusting any non-exception return) is what lets us tell "the model
+# really answered" apart from "llm.jac quietly used its own fallback".
+
+# Caps the number of farmer_message() calls per replan so the endpoint
+# answers in a few seconds even though byllm calls are made one at a time
+# (sequentially) rather than concurrently - a wider breakdown just means
+# more farmers ride the (already-correct) deterministic template below the
+# cap. 6 was chosen as comfortably more than this scaffold's demo breakdown
+# scenarios ever affect in one event, while still bounding worst case
+# latency to a handful of sequential model calls.
+glob MAX_LLM_FARMER_MESSAGES: int = 6;
+
+def _truck_plate(truck_id: str | None) -> str {
+    if truck_id is None {
+        return "unknown";
+    }
+    try {
+        t = jobj(truck_id);
+    } except Exception {
+        t = None;
+    }
+    if t is not None and isinstance(t, Truck) {
+        return t.plate;
+    }
+    return truck_id;
+}
+
+def _route_by_farmer_id(routes: list[RouteInfo]) -> dict[str, RouteInfo] {
+    out: dict[str, RouteInfo] = {};
+    for r in routes {
+        for fid in r.farmerIds {
+            out[fid] = r;
+        }
+    }
+    return out;
+}
+
+def _truck_plate_by_id() -> dict[str, str] {
+    out: dict[str, str] = {};
+    for t in [root -->][?:Truck] {
+        out[jid(t)] = t.plate;
+    }
+    return out;
+}
+
+# explanation: facts-only plan_summary (event type, broken truck name, the
+# deterministic diff notes, spoilage/income before -> after) handed to
+# llm.explain(); the model never sees or computes any number it isn't
+# simply restating from this string.
+def _build_explanation(event: Event, outcome: ReplanOutcome, before: ScoreSet, after: ScoreSet) -> str {
+    truck_name = _truck_plate(event.truckId);
+    plan_summary = (
+        f"Event type: {event.type}. Broken truck: {truck_name}. {outcome.diff.notes} "
+        + f"Spoilage changed from {before.spoilagePct:.1f}% to {after.spoilagePct:.1f}%. "
+        + f"Income changed from LKR {before.income:.0f} to LKR {after.income:.0f}."
+    );
+    try {
+        llm_text = explain(plan_summary);
+    } except Exception {
+        return outcome.explanation;
+    }
+    if llm_text is None or llm_text.strip() == "" or llm_text == EXPLAIN_FALLBACK {
+        return outcome.explanation;
+    }
+    return llm_text;
+}
+
+# messages: one per outcome.messages entry (already exactly the AFFECTED
+# farmers - logic.jac never builds one for an untouched farmer). Farmers
+# whose route disappeared entirely (after_route is None - the "unserved"
+# template logic.jac already wrote: pickup couldn't be rescheduled, the
+# operator will call) never get an llm.farmer_message() call - there is no
+# "new truck/route" fact to personalize for them. Served farmers
+# (reassigned onto a new route id, or attached onto an existing one) are
+# upgraded in outcome.messages order up to MAX_LLM_FARMER_MESSAGES; the
+# rest keep logic.jac's per-language template, isFallback=True.
+def _build_messages(outcome: ReplanOutcome, routes_after: list[RouteInfo]) -> list[Message] {
+    route_by_farmer = _route_by_farmer_id(routes_after);
+    truck_plate_by_id = _truck_plate_by_id();
+    added_ids: set[str] = set(outcome.diff.addedRouteIds);
+
+    messages: list[Message] = [];
+    llm_calls_used = 0;
+
+    for m in outcome.messages {
+        after_route = route_by_farmer.get(m.farmerId);
+        if after_route is None {
+            # Unserved - keep logic.jac's deterministic "could not be
+            # rescheduled, operator will call" template. No LLM call.
+            messages.append(Message(
+                farmerId=m.farmerId, farmerName=m.farmerName, language=m.language,
+                text=m.text, isFallback=True,
+            ));
+            continue;
+        }
+
+        truck_name = truck_plate_by_id.get(after_route.truckId, after_route.truckId);
+        text = m.text;
+        is_fallback = True;
+
+        if llm_calls_used < MAX_LLM_FARMER_MESSAGES {
+            llm_calls_used += 1;
+            if after_route.id in added_ids {
+                change = f"Their pickup moved to a new truck, {truck_name}, on route {after_route.id}.";
+            } else {
+                change = f"Their pickup is now combined onto route {after_route.id}, handled by truck {truck_name}.";
+            }
+            plan_summary = (
+                f"Farmer {m.farmerName}'s original pickup truck broke down. " + change
+                + " The pickup itself is still happening, just with this new arrangement."
+            );
+            fallback_text = FARMER_MESSAGE_FALLBACKS.get(m.language, FARMER_MESSAGE_FALLBACKS["en"]);
+            llm_text: str | None = None;
+            try {
+                llm_text = farmer_message(plan_summary, m.language);
+            } except Exception {
+                llm_text = None;
+            }
+            if llm_text is not None and llm_text.strip() != "" and llm_text != fallback_text {
+                text = llm_text;
+                is_fallback = False;
+            }
+        }
+
+        messages.append(Message(
+            farmerId=m.farmerId, farmerName=m.farmerName, language=m.language,
+            text=text, isFallback=is_fallback,
+        ));
+    }
+    return messages;
+}
+
 def:pub replan_on_event(event: Event) -> ReplanResult {
+    # Captured BEFORE apply_replan_event() mutates the current plan, so
+    # _build_explanation() can report a real before/after, not before==after.
+    before_routes = _current_plan_route_infos();
+    before_plans = _current_plan_plan_infos();
+    before_score = _aggregate_score_from_routes(before_routes, before_plans);
+
     outcome = apply_replan_event(event.type, event.truckId);
 
     routes = _current_plan_route_infos();
@@ -471,16 +621,12 @@ def:pub replan_on_event(event: Event) -> ReplanResult {
         ],
         notes=outcome.diff.notes,
     );
-    messages = [
-        Message(farmerId=m.farmerId, farmerName=m.farmerName, language=m.language, text=m.text, isFallback=m.isFallback)
-        for m in outcome.messages
-    ];
 
     return ReplanResult(
         diff=diff,
         state=_real_state(routes=routes, plans=plans),
         score=Score(baseline=baseline_score, agent=agent_score),
-        explanation=outcome.explanation,
-        messages=messages,
+        explanation=_build_explanation(event, outcome, before_score, agent_score),
+        messages=_build_messages(outcome, routes),
     );
 }
