@@ -95,9 +95,54 @@ for the baseline's assumptions (`logic.BaselineAssumptions`, glob `BASELINE`):
   not a plain average of percentages — a route carrying more kg should
   move the aggregate more. `income`/`truckCost` on the aggregate are
   plain sums across routes.
-- **`score.agent` equals `score.baseline`** for now — there is no
-  separate agent computation yet (task-scoped; `merge_routes` will
-  eventually produce a different `agent` score).
+- **`score.agent` equals `score.baseline` for `baseline_plan()` only** —
+  that endpoint never merges anything. `merge_routes()` computes a real,
+  separate `agent` score from the merged plan (see "The real merge" below).
+
+## The real merge (`logic.jac` / `api.jac`)
+
+`merge_routes()` combines baseline solo routes into shared routes so the
+agent score beats the baseline. It always starts from a **fresh**
+`compute_baseline()` (which has no side effects, so this is naturally
+idempotent) and persists the final merged routes as `Plan` nodes — the
+"current plan" a later replan step is meant to read from. The ONE config
+place for merge assumptions is `logic.MergedAssumptions` (glob `MERGED`),
+next to `BaselineAssumptions`:
+
+- **`MERGED.waiting_hours = 3.0`** — a consolidated truck runs on a fixed
+  schedule, so farmers wait *less* than for an ad-hoc solo trip
+  (`BASELINE.waiting_hours = 10.0`). **Simulated assumption, not
+  measured.** A merged farmer's `elapsed_hours = MERGED.waiting_hours +`
+  the merged route's `hours`.
+- **Merged route distance/hours** come from real graph data — the union
+  of the two routes' `hub_ids` (deduplicated) visited in order via
+  `HubRoute` edges, then the shared market via `HubMarketRoute` — never
+  an assumed constant. If any leg doesn't exist in the graph, the
+  candidate is rejected (no path). `truckCost` is `costPerKm x` that
+  combined distance, charged **once** per merged route (not once per
+  original route).
+- **Candidate rule**: two distinct **current** routes with the same
+  `marketId` whose combined harvest `kg` fits some truck's `capacityKg`
+  (the smallest one that fits). Routes are a reusable pool (same
+  assumption as the baseline — merging does not track a truck being
+  "busy" on another route at the same time), consistent with
+  `BASELINE`'s solo-trip assumption above.
+- **`delta`** = net value of the merged route (`score_cargo`'s summed
+  `revenue` across the route's harvests, minus `truckCost`) minus the
+  summed net value of the two original routes (using their *already
+  computed* baseline net values — not recomputed under `MERGED` numbers).
+- **`spoilageChangePts`** = the merged route's `spoilagePct` minus the
+  kg-weighted average `spoilagePct` of the two originals (negative =
+  improvement).
+- Each pass builds every valid candidate, asks `pick_best_merge` for the
+  one to apply (deliberately left as a stub — see its `TODO` in
+  `logic.jac`), removes the two originals, adds the merged route
+  (`m1`, `m2`, ...), and logs one `MergeStep`. Stops when no candidate has
+  a positive `delta`, or after as many passes as there were starting
+  routes (12, for the real seed) — so it always terminates.
+- **`tripsSaved` is always `1`** per candidate — every candidate combines
+  exactly 2 routes into 1; 3+-way consolidation happens by a later pass
+  merging an already-merged route (`m1`, ...) with another original.
 
 ## Additive `models.jac` fields (owner A, for the real loader)
 
@@ -114,6 +159,11 @@ identical in `SEED_MARKETS` and `SEED_MARKET_RECORDS`):
   the truck's `plate` == the record's `name`.
 - `Harvest.shelf_life_hours` ← `CROP_SHELF_LIFE_HOURS[crop]` (the lookup
   table already above), not from either SEED_* record shape.
+- `Plan`'s additive fields (`route_id`, `truck_id`, `farmer_ids`,
+  `hub_ids`, `market_id`, `distance_km`, `hours`, `spoilage_pct`,
+  `expected_income`, `truck_cost`) aren't seeded at all — `merge_routes()`
+  wipes and rewrites them every call from the current computed plan (see
+  "The real merge" above), not from any `data.jac` record.
 
 ## Known gaps / open items for the team
 
@@ -124,9 +174,12 @@ identical in `SEED_MARKETS` and `SEED_MARKET_RECORDS`):
   `SEED_FARMERS`/`SEED_HARVESTS` (parallel lists), verified by the "every
   harvest appears in exactly one route" test. A real edge would be more
   robust if the convention ever becomes hard to keep in sync.
-- `merge_routes()` and `replan_on_event()` are still the fixed STUB
-  placeholder seed — `score.agent` will stay equal to `score.baseline`
-  until a real merge computation exists.
+- `logic.pick_best_merge()` is a deliberate stub (always returns `None`) —
+  until it's implemented, `merge_routes()` applies zero merges, so its
+  `agent` score equals its `baseline` score and several tests in
+  `logic.test.jac`/`api.test.jac` are EXPECTED to fail (documented inline
+  at each one). `replan_on_event()` is still the fixed STUB placeholder
+  seed, unrelated to this.
 - This was validated locally with the `jac` CLI available in this
   environment; if that differs from the version the team standardised on
   (per the playbook's 9:15 version-match step), re-run `jac check` against

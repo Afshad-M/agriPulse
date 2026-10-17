@@ -139,19 +139,80 @@ test "baseline_plan: no route exceeds its truck's capacityKg" {
 }
 
 test "merge_routes matches contract shape" {
+    load_seed();
     result = merge_routes();
     assert isinstance(result, MergeRoutesResult);
 
-    assert len(result.steps) == 2;
-    step = result.steps[0];
-    assert isinstance(step.stepNo, int);
-    assert isinstance(step.mergedRouteIds, list);
-    assert isinstance(step.newRouteId, str);
-    assert isinstance(step.reason, str);
+    assert isinstance(result.steps, list);
+    if len(result.steps) > 0 {
+        step = result.steps[0];
+        assert isinstance(step.stepNo, int);
+        assert isinstance(step.mergedRouteIds, list);
+        assert isinstance(step.newRouteId, str);
+        assert isinstance(step.reason, str);
+    }
 
     assert isinstance(result.state, State);
     assert len(result.state.routes) > 0;
+    assert len(result.state.plans) > 0;
     assert isinstance(result.score, Score);
+    assert isinstance(result.score.baseline, ScoreSet);
+    assert isinstance(result.score.agent, ScoreSet);
+}
+
+test "merge_routes on the real seed: agent beats baseline on net value and spoilage" {
+    # EXPECTED TO FAIL until pick_best_merge is implemented: with no merges
+    # applied, agent == baseline, so the strict inequalities below don't hold.
+    load_seed();
+    result = merge_routes();
+    agent = result.score.agent;
+    baseline = result.score.baseline;
+
+    assert (agent.income - agent.truckCost) > (baseline.income - baseline.truckCost);
+    assert agent.spoilagePct < baseline.spoilagePct;
+}
+
+test "merge_routes on the real seed: no route exceeds its truck's capacityKg" {
+    load_seed();
+    result = merge_routes();
+    state = result.state;
+
+    truck_by_id: dict[str, TruckInfo] = {};
+    for t in state.trucks { truck_by_id[t.id] = t; }
+    kg_by_farmer_id: dict[str, float] = {};
+    for h in state.harvests { kg_by_farmer_id[h.farmerId] = h.kg; }
+
+    for route in state.routes {
+        truck = truck_by_id[route.truckId];
+        combined_kg = 0.0;
+        for fid in route.farmerIds { combined_kg += kg_by_farmer_id.get(fid, 0.0); }
+        assert combined_kg <= truck.capacityKg;
+    }
+}
+
+test "merge_routes on the real seed: every harvest is in exactly one route" {
+    load_seed();
+    result = merge_routes();
+    state = result.state;
+
+    for harvest in state.harvests {
+        matching = [r for r in state.routes if harvest.farmerId in r.farmerIds];
+        assert len(matching) == 1, f"harvest {harvest.id} should be on exactly one route";
+    }
+}
+
+test "merge_routes is deterministic: calling it twice gives identical results" {
+    load_seed();
+    first = merge_routes();
+    second = merge_routes();
+
+    first_ids = sorted([r.id for r in first.state.routes]);
+    second_ids = sorted([r.id for r in second.state.routes]);
+    assert first_ids == second_ids;
+    assert len(first.steps) == len(second.steps);
+    assert abs(first.score.agent.income - second.score.agent.income) < 1e-6;
+    assert abs(first.score.agent.spoilagePct - second.score.agent.spoilagePct) < 1e-6;
+    assert abs(first.score.agent.truckCost - second.score.agent.truckCost) < 1e-6;
 }
 
 test "replan_on_event matches contract shape" {

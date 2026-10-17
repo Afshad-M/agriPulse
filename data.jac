@@ -246,9 +246,9 @@ glob SEED_MARKET_RECORDS: list[dict[str, any]] = [
 ];
 
 glob SEED_TRUCK_RECORDS: list[dict[str, any]] = [
-    {"id": "t1", "name": "WP CAB-1001", "capacityKg": 1000.0, "costPerKm": 45.0, "status": "available"},
-    {"id": "t2", "name": "CP CAB-1500", "capacityKg": 1500.0, "costPerKm": 60.0, "status": "available"},
-    {"id": "t3", "name": "MH CAB-2000", "capacityKg": 2000.0, "costPerKm": 75.0, "status": "available"}
+    {"id": "t1", "name": "WP CAB-1001", "capacityKg": 1000.0, "costPerKm": 100.0, "status": "available"},
+    {"id": "t2", "name": "CP CAB-1500", "capacityKg": 1500.0, "costPerKm": 100.0, "status": "available"},
+    {"id": "t3", "name": "MH CAB-2000", "capacityKg": 2000.0, "costPerKm": 100.0, "status": "available"}
 ];
 
 glob SEED_FARMER_HUB_RECORDS: list[dict[str, any]] = [
