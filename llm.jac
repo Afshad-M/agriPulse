@@ -75,21 +75,38 @@ def prioritize(candidates: list[str]) -> list[str] {
 
 
 # ---------------------------------------------------------------------------
-# farmer_message: per-farmer notification of what changed.
+# farmer_message: per-farmer notification of what changed, in en/si/ta.
 # ---------------------------------------------------------------------------
 
-glob FARMER_MESSAGE_FALLBACK: str = "[fallback] Your delivery plan has been updated due to a change in the network. A team member will confirm pickup details shortly.";
+# Per-language fallbacks so a model failure never drops a non-English
+# farmer back to English. Machine-drafted (Sinhala/Tamil) - please have a
+# native speaker on the team sanity-check these before the demo; if they
+# need a fix, edit here only (never silently swap in English).
+glob FARMER_MESSAGE_FALLBACK_EN: str = "[fallback] Your delivery plan has been updated due to a change in the network. A team member will confirm pickup details shortly.";
+glob FARMER_MESSAGE_FALLBACK_SI: str = "[fallback] ජාල වෙනසක් නිසා ඔබේ බෙදාහැරීමේ සැලැස්ම යාවත්කාලීන කර ඇත. කණ්ඩායම් සාමාජිකයෙක් ඉක්මනින් එකතු කිරීමේ විස්තර තහවුරු කරනු ඇත.";
+glob FARMER_MESSAGE_FALLBACK_TA: str = "[fallback] பிணையத்தில் ஏற்பட்ட மாற்றம் காரணமாக உங்கள் டெலிவரி திட்டம் புதுப்பிக்கப்பட்டுள்ளது. குழு உறுப்பினர் விரைவில் சேகரிப்பு விவரங்களை உறுதிப்படுத்துவார்.";
+
+# Back-compat alias - existing callers / the earlier smoke test referenced
+# this single-language constant. Keep pointing at the English fallback.
+glob FARMER_MESSAGE_FALLBACK: str = FARMER_MESSAGE_FALLBACK_EN;
+
+glob FARMER_MESSAGE_FALLBACKS: dict[str, str] = {
+    "en": FARMER_MESSAGE_FALLBACK_EN,
+    "si": FARMER_MESSAGE_FALLBACK_SI,
+    "ta": FARMER_MESSAGE_FALLBACK_TA
+};
 
 def _farmer_message_llm(plan_summary: str, language: str) -> str by llm();
-sem _farmer_message_llm = "Draft a short (2-3 sentence), friendly status message to a farmer about their delivery plan, written in the given language (en=English, si=Sinhala, ta=Tamil).";
+sem _farmer_message_llm = "Draft a short (2-3 sentence) status message to a farmer about their delivery plan, written natively in the given language - not a literal translation from English. Use a warm, respectful, plain-spoken tone appropriate for addressing a smallholder farmer directly (not formal officialese). Mention concretely what changed and the new expected timing.";
 sem _farmer_message_llm.plan_summary = "A short deterministic summary of the farmer's plan.";
-sem _farmer_message_llm.language = "Target language code: en, si, or ta.";
+sem _farmer_message_llm.language = "Target language code: 'en' for English, 'si' for Sinhala, 'ta' for Tamil. Write entirely in that language (script included for si/ta), not transliterated.";
 
 def farmer_message(plan_summary: str, language: str = "en") -> str {
+    fallback = FARMER_MESSAGE_FALLBACKS[language] if language in FARMER_MESSAGE_FALLBACKS else FARMER_MESSAGE_FALLBACK_EN;
     try {
         return _farmer_message_llm(plan_summary, language);
     } except Exception {
-        return FARMER_MESSAGE_FALLBACK;
+        return fallback;
     }
 }
 
