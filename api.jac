@@ -9,21 +9,22 @@ contract, deliberately decoupled from the persisted graph schema in
 models.jac. Field names are camelCase exactly as the contract specifies;
 fields may be added later but never renamed or removed. Money is LKR.
 
-load_seed() and baseline_plan() are real: they build the graph from
-data.jac's SEED_* records (models.jac node/edge types) and compute the
-baseline from it (logic.jac.compute_baseline()). merge_routes() and
-replan_on_event() are still STUB - unchanged, returning the fixed
-placeholder seed, until that work lands.
+load_seed(), baseline_plan() and merge_routes() are real: they build the
+graph from data.jac's SEED_* records (models.jac node/edge types) and
+compute from it (logic.jac.compute_baseline() / run_merge_routes()).
+merge_routes() depends on logic.pick_best_merge(), a deliberate stub -
+see its TODO in logic.jac. replan_on_event() is still STUB - unchanged,
+returning the fixed placeholder seed, until that work lands.
 """
 
-import from models { Farmer, Harvest, Hub, Market, Truck, DeliversTo, HubRoute, HubMarketRoute }
+import from models { Farmer, Harvest, Hub, Market, Truck, Plan, DeliversTo, HubRoute, HubMarketRoute }
 import from data {
     SEED_FARMERS, SEED_HARVESTS, SEED_HUBS, SEED_MARKETS, SEED_TRUCKS,
     SEED_FARMER_HUB_LINKS, SEED_HUB_ROUTES, SEED_HUB_MARKET_ROUTES,
     CROP_SHELF_LIFE_HOURS, SEED_FARMER_RECORDS, SEED_HUB_RECORDS,
     SEED_MARKET_RECORDS, SEED_TRUCK_RECORDS,
 }
-import from logic { compute_baseline, BaselineRoute }
+import from logic { compute_baseline, BaselineRoute, run_merge_routes }
 
 # ---- Contract data types -----------------------------------------------
 
@@ -445,10 +446,96 @@ def:pub baseline_plan() -> BaselinePlanResult {
     );
 }
 
+# ---- Real merge (owner: A) -------------------------------------------
+# run_merge_routes() (logic.jac) persists the merged "current plan" as
+# Plan nodes - these helpers read that back into the contract shape.
+# logic.MergeStepRecord already uses CONTRACT v1's exact field names
+# (stepNo, mergedRouteIds, newRouteId, reason), so converting to api.jac's
+# MergeStep is a 1:1 rename of the type only.
+
+def _current_plan_route_infos() -> list[RouteInfo] {
+    plans = [root -->][?:Plan];
+    return [
+        RouteInfo(
+            id=p.route_id, truckId=p.truck_id, farmerIds=p.farmer_ids,
+            hubIds=p.hub_ids, marketId=p.market_id, distanceKm=p.distance_km, hours=p.hours,
+        )
+        for p in plans
+    ];
+}
+
+def _current_plan_plan_infos() -> list[PlanInfo] {
+    plans = [root -->][?:Plan];
+    return [
+        PlanInfo(
+            routeId=p.route_id, expectedSpoilagePct=p.spoilage_pct,
+            expectedIncome=p.expected_income, truckCost=p.truck_cost,
+        )
+        for p in plans
+    ];
+}
+
+def _kg_by_farmer_id() -> dict[str, float] {
+    farmers = [root -->][?:Farmer];
+    harvests = [root -->][?:Harvest];
+    out: dict[str, float] = {};
+    for (farmer, harvest) in zip(farmers, harvests) {
+        out[jid(farmer)] = harvest.quantity_kg;
+    }
+    return out;
+}
+
+# Same kg-weighted-spoilage/summed-income/summed-truckCost shape as
+# _aggregate_score, but generic over any RouteInfo/PlanInfo list (not just
+# one-harvest-per-route baseline routes) - a merged route can carry
+# several farmerIds, so kg is summed per route from State.harvests rather
+# than assumed 1:1 with a positional harvest.
+def _aggregate_score_from_routes(routes: list[RouteInfo], plans: list[PlanInfo]) -> ScoreSet {
+    kg_by_farmer = _kg_by_farmer_id();
+    plan_by_route_id: dict[str, PlanInfo] = {};
+    for p in plans {
+        plan_by_route_id[p.routeId] = p;
+    }
+
+    total_income = 0.0;
+    total_truck_cost = 0.0;
+    total_kg = 0.0;
+    spoiled_kg = 0.0;
+    for r in routes {
+        plan = plan_by_route_id.get(r.id);
+        if plan is None {
+            continue;
+        }
+        route_kg = 0.0;
+        for fid in r.farmerIds {
+            route_kg += kg_by_farmer.get(fid, 0.0);
+        }
+        total_income += plan.expectedIncome;
+        total_truck_cost += plan.truckCost;
+        total_kg += route_kg;
+        spoiled_kg += route_kg * (plan.expectedSpoilagePct / 100.0);
+    }
+    spoilage_pct = (spoiled_kg / total_kg * 100.0) if total_kg > 0.0 else 0.0;
+    return ScoreSet(spoilagePct=spoilage_pct, income=total_income, truckCost=total_truck_cost);
+}
+
 def:pub merge_routes() -> MergeRoutesResult {
-    # STUB: no real merge logic yet; spawn logic.MergeRoutes() here once it lands.
+    baseline_score = _aggregate_score(compute_baseline()).baseline;
+
+    merge_steps = run_merge_routes();
+    steps = [
+        MergeStep(stepNo=s.stepNo, mergedRouteIds=s.mergedRouteIds, newRouteId=s.newRouteId, reason=s.reason)
+        for s in merge_steps
+    ];
+
+    routes = _current_plan_route_infos();
+    plans = _current_plan_plan_infos();
+    agent_score = _aggregate_score_from_routes(routes, plans);
+
     return MergeRoutesResult(
-        steps=_placeholder_merge_steps(), state=_placeholder_state(), score=_placeholder_score(),
+        steps=steps,
+        state=_real_state(routes=routes, plans=plans),
+        score=Score(baseline=baseline_score, agent=agent_score),
     );
 }
 
