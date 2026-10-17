@@ -1,24 +1,31 @@
 import from .api_layer { fetch_seed, fetch_baseline_plan }
 import from .mock_layer { fetch_merge_routes, fetch_replan }
 
-# Entire new UI (C, proposed - see PR description): dark professional
-# dashboard with a persistent sidebar, genuinely different layout from the
-# earlier single-column stacked page. load_seed/baseline_plan now call A's
-# real endpoints (typed RPC via api_layer.jac); merge_routes/replan_on_event
-# still use B's mock data since those two are still server-side stubs.
-# Every fetch result carries source: "real" | "mock", shown as a badge -
-# the same transparency principle as the isFallback badge on LLM messages.
-glob THEME: dict[str, str] = {
-    "bg": "#0D1210", "sidebar": "#111713", "panel": "#161D18", "panelAlt": "#1B2420",
-    "border": "#262F29", "borderStrong": "#374239",
-    "ink": "#EDF2EE", "muted": "#96A49B", "subtle": "#67766C",
-    "green": "#3FBF7F", "greenSoft": "rgba(63,191,127,0.14)", "greenStrong": "#5FD99A",
-    "blue": "#5AA8EE", "blueSoft": "rgba(90,168,238,0.14)",
-    "ochre": "#E3AE48", "ochreSoft": "rgba(227,174,72,0.14)",
-    "plum": "#C090E6", "plumSoft": "rgba(192,144,230,0.14)",
-    "red": "#E57C70", "redSoft": "rgba(229,124,112,0.14)",
-    "radius": "12px", "radiusSm": "7px"
+# Second design pass (C, proposed): deliberately NOT the generic SaaS-
+# dashboard look (stat-card grid + soft pill badges + uniform rounded
+# shadow-boxes everywhere). Instead: a serif/mono type pairing, bracket-
+# style status text ([LIVE], [BROKEN]) instead of pill badges, left-
+# accent bars instead of tinted backgrounds, hairline borders instead of
+# drop shadows, and a light/dark toggle (two full palettes, same keys).
+glob THEME_LIGHT: dict[str, str] = {
+    "bg": "#FAF7F0", "sidebar": "#F1ECE0", "panel": "#FFFFFF", "panelAlt": "#F5F1E6",
+    "border": "#DBD4C1", "borderStrong": "#B6AC90",
+    "ink": "#1C1A13", "muted": "#6B6553", "subtle": "#948C73",
+    "green": "#2F6B4F", "blue": "#3A5A8C", "ochre": "#A3691D", "plum": "#6B4A72", "red": "#A23E2E",
+    "onAccent": "#FAF7F0"
 };
+
+glob THEME_DARK: dict[str, str] = {
+    "bg": "#14120E", "sidebar": "#1A1711", "panel": "#1E1A13", "panelAlt": "#242017",
+    "border": "#362F23", "borderStrong": "#4B4333",
+    "ink": "#ECE6D6", "muted": "#A69D87", "subtle": "#79715D",
+    "green": "#5C9A78", "blue": "#6E8FBF", "ochre": "#C99448", "plum": "#A684B0", "red": "#C16955",
+    "onAccent": "#14120E"
+};
+
+glob FONT_SERIF: str = "'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif";
+glob FONT_MONO: str = "ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace";
+glob FONT_SANS: str = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
 glob EVENT_BUTTONS: list[dict[str, str]] = [
     {"type": "truck_breakdown", "label": "Truck breakdown"},
@@ -39,7 +46,8 @@ def:pub app -> JsxElement {
         scenario: str = "Baseline plan",
         active_event: str = "",
         new_harvest_text: str = "",
-        data_source: str = "real";
+        data_source: str = "real",
+        theme_mode: str = "light";
 
     async can with entry {
         try {
@@ -115,6 +123,12 @@ def:pub app -> JsxElement {
         }
     }
 
+    def set_theme(mode: str) {
+        theme_mode = mode;
+    }
+
+    THEME = THEME_LIGHT if theme_mode == "light" else THEME_DARK;
+
     farmers = (state["farmers"] as list[dict[str, any]]) if state else [];
     harvests = (state["harvests"] as list[dict[str, any]]) if state else [];
     hubs = (state["hubs"] as list[dict[str, any]]) if state else [];
@@ -127,9 +141,9 @@ def:pub app -> JsxElement {
     added_ids = diff["addedRouteIds"] as list[str] if diff else [];
     diff_notes = diff["notes"] as list[str] if diff and "notes" in diff else [];
 
-    # Trucks differ between the real seed (data.jac) and B's mock data (ids,
-    # names, how many), so route rows look the truck's real name up by id
-    # instead of assuming fixed ids like the earlier version did.
+    # Real seed (data.jac) and B's mock data use different truck ids/names
+    # entirely, so route rows look the truck up by id rather than
+    # assuming a fixed id scheme.
     truck_name_by_id: dict[str, str] = {};
     for t in trucks { truck_name_by_id[t["id"] as str] = t["name"] as str; }
     truck_color_by_id: dict[str, str] = {};
@@ -141,25 +155,29 @@ def:pub app -> JsxElement {
     spoilage_better = (agent_score["spoilagePct"] as float) < (baseline_score["spoilagePct"] as float) if score else False;
     income_better = (agent_score["income"] as float) > (baseline_score["income"] as float) if score else False;
     cost_better = (agent_score["truckCost"] as float) < (baseline_score["truckCost"] as float) if score else False;
-    delta_color = THEME["greenStrong"];
-    neutral_color = THEME["ink"];
 
-    return <div style={{"minHeight":"100vh", "display":"flex", "backgroundColor":THEME["bg"], "color":THEME["ink"], "fontFamily":"system-ui, -apple-system, BlinkMacSystemFont, sans-serif", "fontSize":"15px", "lineHeight":"1.5"}}>
-      <aside style={{"width":"272px", "flexShrink":"0", "backgroundColor":THEME["sidebar"], "borderRight":"1px solid " + THEME["border"], "display":"flex", "flexDirection":"column", "padding":"22px 18px", "gap":"22px", "position":"sticky", "top":"0", "height":"100vh", "overflowY":"auto"}}>
-        <div style={{"display":"flex", "alignItems":"center", "gap":"10px"}}>
-          <div style={{"width":"34px", "height":"34px", "display":"grid", "placeItems":"center", "backgroundColor":THEME["green"], "color":"#0D1210", "fontWeight":"800", "fontSize":"16px", "borderRadius":THEME["radiusSm"]}}>A</div>
-          <div><strong style={{"fontSize":"17px", "letterSpacing":"-0.01em"}}>AgriPulse</strong><div style={{"fontSize":"12px", "color":THEME["muted"]}}>Harvest-to-market agent</div></div>
+    return <div style={{"minHeight":"100vh", "display":"flex", "backgroundColor":THEME["bg"], "color":THEME["ink"], "fontFamily":FONT_SANS, "fontSize":"15px", "lineHeight":"1.55"}}>
+      <aside style={{"width":"268px", "flexShrink":"0", "backgroundColor":THEME["sidebar"], "borderRight":"1px solid " + THEME["border"], "display":"flex", "flexDirection":"column", "padding":"26px 20px", "position":"sticky", "top":"0", "height":"100vh", "overflowY":"auto"}}>
+
+        <div style={{"marginBottom":"28px"}}>
+          <div style={{"fontFamily":FONT_MONO, "fontSize":"11px", "letterSpacing":"0.12em", "color":THEME["subtle"], "marginBottom":"2px"}}>AGRIPULSE</div>
+          <div style={{"fontFamily":FONT_SERIF, "fontStyle":"italic", "fontSize":"15px", "color":THEME["muted"]}}>Harvest-to-market agent</div>
+          <div style={{"display":"flex", "gap":"10px", "marginTop":"10px", "fontFamily":FONT_MONO, "fontSize":"11px"}}>
+            <span onClick={lambda (e: MouseEvent) { set_theme("light"); }} style={{"cursor":"pointer", "color": THEME["ink"] if theme_mode == "light" else THEME["subtle"], "textDecoration": "underline" if theme_mode == "light" else "none", "fontWeight": "700" if theme_mode == "light" else "400"}}>LIGHT</span>
+            <span style={{"color":THEME["border"]}}>/</span>
+            <span onClick={lambda (e: MouseEvent) { set_theme("dark"); }} style={{"cursor":"pointer", "color": THEME["ink"] if theme_mode == "dark" else THEME["subtle"], "textDecoration": "underline" if theme_mode == "dark" else "none", "fontWeight": "700" if theme_mode == "dark" else "400"}}>DARK</span>
+          </div>
         </div>
 
-        <div style={{"padding":"12px 14px", "backgroundColor":THEME["panel"], "border":"1px solid " + THEME["border"], "borderRadius":THEME["radius"]}}>
-          <div style={{"fontSize":"11px", "color":THEME["subtle"], "textTransform":"uppercase", "letterSpacing":"0.04em", "marginBottom":"6px"}}>Current scenario</div>
-          <div style={{"fontSize":"14px", "fontWeight":"600", "marginBottom":"8px"}}>{scenario}</div>
-          <span style={{"display":"inline-block", "padding":"3px 9px", "borderRadius":"999px", "fontSize":"11px", "fontWeight":"700", "letterSpacing":"0.02em", "backgroundColor": THEME["greenSoft"] if data_source == "real" else THEME["ochreSoft"], "color": THEME["greenStrong"] if data_source == "real" else THEME["ochre"]}}>{"● LIVE (code-computed)" if data_source == "real" else "● SIMULATED (mock)"}</span>
+        <div style={{"paddingTop":"14px", "paddingBottom":"18px", "borderTop":"1px solid " + THEME["border"], "marginBottom":"4px"}}>
+          <div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.1em", "color":THEME["subtle"], "marginBottom":"6px"}}>SCENARIO</div>
+          <div style={{"fontFamily":FONT_SERIF, "fontSize":"18px", "marginBottom":"8px"}}>{scenario}</div>
+          <div style={{"fontFamily":FONT_MONO, "fontSize":"11px", "fontWeight":"700", "letterSpacing":"0.04em", "color": THEME["green"] if data_source == "real" else THEME["ochre"]}}>{"[ LIVE — code-computed ]" if data_source == "real" else "[ SIMULATED — mock ]"}</div>
         </div>
 
-        <div>
-          <div style={{"fontSize":"11px", "color":THEME["subtle"], "textTransform":"uppercase", "letterSpacing":"0.04em", "marginBottom":"10px"}}>Simulate an event</div>
-          <div style={{"display":"flex", "flexDirection":"column", "gap":"8px", "marginBottom":"14px"}}>
+        <div style={{"paddingTop":"14px", "paddingBottom":"18px", "borderTop":"1px solid " + THEME["border"]}}>
+          <div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.1em", "color":THEME["subtle"], "marginBottom":"12px"}}>SIMULATE AN EVENT</div>
+          <div style={{"display":"flex", "flexDirection":"column", "marginBottom":"16px"}}>
             {for btn in EVENT_BUTTONS {
               is_active = active_event == btn["type"];
               <button
@@ -167,99 +185,123 @@ def:pub app -> JsxElement {
                 onClick={lambda (e: MouseEvent) { handle_event_click(e, btn["type"], btn["label"]); }}
                 disabled={loading}
                 style={{
-                  "width":"100%", "textAlign":"left", "padding":"10px 12px",
-                  "backgroundColor": THEME["green"] if is_active else THEME["panel"],
-                  "color": "#0D1210" if is_active else THEME["ink"],
-                  "border":"1px solid " + (THEME["green"] if is_active else THEME["border"]),
-                  "borderRadius":THEME["radiusSm"], "fontSize":"14px", "fontWeight":"600",
+                  "width":"100%", "textAlign":"left", "padding":"9px 0 9px 12px", "marginBottom":"2px",
+                  "backgroundColor":"transparent", "color": THEME["ink"] if is_active else THEME["muted"],
+                  "borderTop":"none", "borderRight":"none", "borderBottom":"none",
+                  "borderLeft": "3px solid " + (THEME["green"] if is_active else "transparent"),
+                  "fontSize":"14px", "fontWeight": "700" if is_active else "400", "fontFamily":"inherit",
                   "cursor":"pointer", "opacity": "0.5" if loading else "1"
                 }}
               >{btn["label"]}</button>
             }}
           </div>
+          <div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.1em", "color":THEME["subtle"], "marginBottom":"8px"}}>NEW HARVEST</div>
           <textarea
             value={new_harvest_text}
             onChange={handle_new_harvest_input}
-            placeholder="New harvest, free text - e.g. '~80kg beans near Matale, ready in 2 hours'"
+            placeholder="~80kg beans near Matale, ready in 2 hours"
             rows={3}
-            style={{"width":"100%", "padding":"10px 12px", "backgroundColor":THEME["panel"], "color":THEME["ink"], "border":"1px solid " + THEME["border"], "borderRadius":THEME["radiusSm"], "fontSize":"13px", "resize":"vertical", "marginBottom":"8px", "fontFamily":"inherit"}}
+            style={{"width":"100%", "padding":"8px 0", "backgroundColor":"transparent", "color":THEME["ink"], "border":"none", "borderBottom":"1px solid " + THEME["borderStrong"], "borderRadius":"0", "fontSize":"13px", "resize":"vertical", "marginBottom":"10px", "fontFamily":"inherit"}}
           />
-          <button onClick={submit_new_harvest} disabled={loading} style={{"width":"100%", "padding":"10px 12px", "backgroundColor":THEME["blue"], "color":"#0D1210", "border":"1px solid " + THEME["blue"], "borderRadius":THEME["radiusSm"], "fontSize":"14px", "fontWeight":"700", "cursor":"pointer", "opacity": "0.5" if loading else "1"}}>Log new harvest</button>
+          <button onClick={submit_new_harvest} disabled={loading} style={{"width":"100%", "padding":"9px 0", "backgroundColor":"transparent", "color":THEME["blue"], "border":"1px solid " + THEME["blue"], "borderRadius":"0", "fontSize":"13px", "fontWeight":"700", "fontFamily":FONT_MONO, "letterSpacing":"0.03em", "cursor":"pointer", "opacity": "0.5" if loading else "1"}}>LOG HARVEST</button>
         </div>
 
-        <button onClick={merge_routes_action} disabled={loading} style={{"width":"100%", "padding":"12px", "backgroundColor":"transparent", "color":THEME["green"], "border":"1.5px solid " + THEME["green"], "borderRadius":THEME["radiusSm"], "fontSize":"14px", "fontWeight":"700", "cursor":"pointer", "opacity": "0.5" if loading else "1"}}>⇄ Merge routes</button>
+        <div style={{"paddingTop":"18px", "borderTop":"1px solid " + THEME["border"]}}>
+          <button onClick={merge_routes_action} disabled={loading} style={{"width":"100%", "padding":"11px 0", "backgroundColor":THEME["green"], "color":THEME["onAccent"], "border":"none", "borderRadius":"0", "fontSize":"14px", "fontWeight":"700", "fontFamily":FONT_SERIF, "fontStyle":"italic", "cursor":"pointer", "opacity": "0.5" if loading else "1"}}>Merge routes</button>
+        </div>
 
-        <div style={{"marginTop":"auto", "fontSize":"11px", "color":THEME["subtle"], "paddingTop":"14px", "borderTop":"1px solid " + THEME["border"]}}>All data simulated. Built in Jac for the Jaseci AI Hackathon.</div>
+        <div style={{"marginTop":"auto", "fontFamily":FONT_SERIF, "fontStyle":"italic", "fontSize":"12px", "color":THEME["subtle"], "paddingTop":"18px", "borderTop":"1px solid " + THEME["border"]}}>All data simulated. Built in Jac for the Jaseci AI Hackathon.</div>
       </aside>
 
-      <main style={{"flex":"1", "padding":"28px 32px", "maxWidth":"1240px"}}>
-        <div style={{"marginBottom":"22px"}}><h1 style={{"fontSize":"26px", "margin":"0 0 6px", "letterSpacing":"-0.015em"}}>Sri Lanka produce network</h1><p style={{"margin":"0", "color":THEME["muted"]}}>Harvest readiness, route performance and disruption planning.</p></div>
-        {if error { <div role="alert" style={{"padding":"14px 16px", "marginBottom":"16px", "color":THEME["red"], "backgroundColor":THEME["redSoft"], "border":"1px solid " + THEME["red"], "borderRadius":THEME["radius"]}}>{error}</div> }}
-        {if loading { <div role="status" style={{"padding":"18px", "backgroundColor":THEME["panel"], "border":"1px solid " + THEME["border"], "borderRadius":THEME["radius"], "color":THEME["muted"]}}>Loading seed and baseline data…</div> }}
+      <main style={{"flex":"1", "padding":"34px 38px", "maxWidth":"1240px"}}>
+        <div style={{"marginBottom":"26px"}}>
+          <h1 style={{"fontFamily":FONT_SERIF, "fontSize":"32px", "fontWeight":"400", "margin":"0 0 6px", "letterSpacing":"-0.01em"}}>Sri Lanka produce network</h1>
+          <p style={{"margin":"0", "color":THEME["muted"], "fontFamily":FONT_SERIF, "fontStyle":"italic", "fontSize":"15px"}}>Harvest readiness, route performance and disruption planning.</p>
+        </div>
+        {if error { <div role="alert" style={{"padding":"12px 16px", "marginBottom":"18px", "color":THEME["red"], "borderLeft":"3px solid " + THEME["red"], "backgroundColor":THEME["panelAlt"], "fontSize":"14px"}}>{error}</div> }}
+        {if loading { <div role="status" style={{"padding":"16px 0", "color":THEME["muted"], "fontFamily":FONT_SERIF, "fontStyle":"italic"}}>Loading seed and baseline data…</div> }}
         {if not loading {
           <div>
-            <section style={{"display":"grid", "gridTemplateColumns":"repeat(auto-fit, minmax(150px, 1fr))", "border":"1px solid " + THEME["border"], "backgroundColor":THEME["panel"], "borderRadius":THEME["radius"], "marginBottom":"20px", "overflow":"hidden"}}>
-              <div style={{"padding":"16px 18px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"color":THEME["muted"], "fontSize":"12px", "fontWeight":"600", "letterSpacing":"0.02em", "textTransform":"uppercase"}}>Farmers</div><strong style={{"fontSize":"30px", "fontVariantNumeric":"tabular-nums", "color":THEME["greenStrong"]}}>{str(len(farmers))}</strong></div>
-              <div style={{"padding":"16px 18px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"color":THEME["muted"], "fontSize":"12px", "fontWeight":"600", "letterSpacing":"0.02em", "textTransform":"uppercase"}}>Harvests</div><strong style={{"fontSize":"30px", "fontVariantNumeric":"tabular-nums", "color":THEME["greenStrong"]}}>{str(len(harvests))}</strong></div>
-              <div style={{"padding":"16px 18px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"color":THEME["muted"], "fontSize":"12px", "fontWeight":"600", "letterSpacing":"0.02em", "textTransform":"uppercase"}}>Hubs</div><strong style={{"fontSize":"30px", "fontVariantNumeric":"tabular-nums", "color":THEME["greenStrong"]}}>{str(len(hubs))}</strong></div>
-              <div style={{"padding":"16px 18px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"color":THEME["muted"], "fontSize":"12px", "fontWeight":"600", "letterSpacing":"0.02em", "textTransform":"uppercase"}}>Markets</div><strong style={{"fontSize":"30px", "fontVariantNumeric":"tabular-nums", "color":THEME["greenStrong"]}}>{str(len(markets))}</strong></div>
-              <div style={{"padding":"16px 18px"}}><div style={{"color":THEME["muted"], "fontSize":"12px", "fontWeight":"600", "letterSpacing":"0.02em", "textTransform":"uppercase"}}>Routes</div><strong style={{"fontSize":"30px", "fontVariantNumeric":"tabular-nums", "color":THEME["greenStrong"]}}>{str(len(routes))}</strong><div style={{"fontSize":"12px", "color":THEME["subtle"]}}>{str(len(trucks))} trucks</div></div>
-            </section>
+            <div style={{"display":"flex", "flexWrap":"wrap", "borderTop":"1px solid " + THEME["borderStrong"], "borderBottom":"1px solid " + THEME["borderStrong"], "padding":"16px 0", "marginBottom":"26px"}}>
+              <div style={{"paddingRight":"28px", "marginRight":"28px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.08em", "color":THEME["subtle"]}}>FARMERS</div><div style={{"fontFamily":FONT_MONO, "fontSize":"26px", "fontWeight":"700"}}>{str(len(farmers))}</div></div>
+              <div style={{"paddingRight":"28px", "marginRight":"28px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.08em", "color":THEME["subtle"]}}>HARVESTS</div><div style={{"fontFamily":FONT_MONO, "fontSize":"26px", "fontWeight":"700"}}>{str(len(harvests))}</div></div>
+              <div style={{"paddingRight":"28px", "marginRight":"28px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.08em", "color":THEME["subtle"]}}>HUBS</div><div style={{"fontFamily":FONT_MONO, "fontSize":"26px", "fontWeight":"700"}}>{str(len(hubs))}</div></div>
+              <div style={{"paddingRight":"28px", "marginRight":"28px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.08em", "color":THEME["subtle"]}}>MARKETS</div><div style={{"fontFamily":FONT_MONO, "fontSize":"26px", "fontWeight":"700"}}>{str(len(markets))}</div></div>
+              <div><div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.08em", "color":THEME["subtle"]}}>ROUTES</div><div style={{"fontFamily":FONT_MONO, "fontSize":"26px", "fontWeight":"700"}}>{str(len(routes))}<span style={{"fontSize":"14px", "color":THEME["subtle"], "fontWeight":"400"}}> / {str(len(trucks))} trucks</span></div></div>
+            </div>
 
-            <div style={{"display":"grid", "gridTemplateColumns":"minmax(0, 1.7fr) minmax(280px, 1fr)", "gap":"18px", "alignItems":"start"}}>
-              <section style={{"backgroundColor":THEME["panel"], "border":"1px solid " + THEME["border"], "borderRadius":THEME["radius"], "minWidth":"0", "overflow":"hidden"}}>
-                <div style={{"padding":"16px 18px", "borderBottom":"1px solid " + THEME["border"]}}><h2 style={{"margin":"0 0 4px", "fontSize":"17px"}}>Routes and assignments</h2><div style={{"color":THEME["muted"], "fontSize":"13px"}}>{str(len(routes))} active {"route" if len(routes) == 1 else "routes"} across {str(len(trucks))} trucks.</div></div>
-                <div style={{"display":"flex", "gap":"8px", "flexWrap":"wrap", "padding":"12px 18px", "borderBottom":"1px solid " + THEME["border"]}}>
-                  {for t in trucks { <span key={t["id"]} style={{"padding":"4px 10px", "borderRadius":"999px", "backgroundColor":"rgba(255,255,255,0.04)", "color":truck_color_by_id[t["id"] as str], "fontWeight":"600", "fontSize":"12px", "border":"1px solid " + THEME["border"]}}>● {t["name"]}</span> }}
-                  {if event_done { <span style={{"padding":"4px 10px", "borderRadius":"999px", "backgroundColor":THEME["redSoft"], "color":THEME["red"], "fontWeight":"600", "fontSize":"12px"}}>┄ Removed</span><span style={{"padding":"4px 10px", "borderRadius":"999px", "backgroundColor":THEME["greenSoft"], "color":THEME["greenStrong"], "fontWeight":"600", "fontSize":"12px"}}>● New route</span> }}
+            <div style={{"display":"grid", "gridTemplateColumns":"minmax(0, 1.7fr) minmax(280px, 1fr)", "gap":"30px", "alignItems":"start"}}>
+              <section style={{"minWidth":"0"}}>
+                <div style={{"display":"flex", "justifyContent":"space-between", "alignItems":"baseline", "borderBottom":"1px solid " + THEME["borderStrong"], "paddingBottom":"8px", "marginBottom":"4px"}}>
+                  <h2 style={{"fontFamily":FONT_SERIF, "fontWeight":"400", "margin":"0", "fontSize":"19px"}}>Routes and assignments</h2>
+                  <span style={{"fontFamily":FONT_MONO, "fontSize":"12px", "color":THEME["subtle"]}}>{str(len(routes))} active</span>
                 </div>
-                <div style={{"padding":"8px 18px 18px"}}>
+                <div style={{"display":"flex", "gap":"16px", "flexWrap":"wrap", "padding":"10px 0", "borderBottom":"1px solid " + THEME["border"], "marginBottom":"4px", "fontFamily":FONT_MONO, "fontSize":"12px"}}>
+                  {for t in trucks { <span key={t["id"]} style={{"color":truck_color_by_id[t["id"] as str], "borderLeft":"3px solid " + truck_color_by_id[t["id"] as str], "paddingLeft":"6px"}}>{t["name"]}</span> }}
+                  {if event_done { <span style={{"color":THEME["red"], "borderLeft":"3px dashed " + THEME["red"], "paddingLeft":"6px"}}>removed</span><span style={{"color":THEME["green"], "borderLeft":"3px solid " + THEME["green"], "paddingLeft":"6px"}}>new</span> }}
+                </div>
+                <div>
                   {for route in routes {
                     removed = route["id"] in removed_ids;
                     added = route["id"] in added_ids;
                     truck_id = route["truckId"] as str;
                     assigned_name = truck_name_by_id[truck_id] if truck_id in truck_name_by_id else truck_id;
-                    row_bg = THEME["redSoft"] if removed else THEME["greenSoft"] if added else THEME["panelAlt"];
-                    row_border = "1px dashed " + THEME["red"] if removed else "1px solid " + THEME["green"] if added else "1px solid " + THEME["border"];
-                    <div key={route["id"]} style={{"display":"flex", "justifyContent":"space-between", "flexWrap":"wrap", "gap":"8px", "padding":"12px 14px", "backgroundColor":row_bg, "border":row_border, "borderRadius":THEME["radiusSm"], "marginTop":"8px"}}>
-                      <span><strong>{route["id"]}</strong> · {str(len(route["farmerIds"] as list[str]))} farmer lots → {route["marketId"]}{" · Removed" if removed else " · New" if added else ""}</span>
-                      <span style={{"color":THEME["muted"]}}>{assigned_name} · {str(route["distanceKm"])} km</span>
+                    accent = THEME["red"] if removed else THEME["green"] if added else THEME["border"];
+                    status_word = "REMOVED" if removed else "NEW" if added else "";
+                    <div key={route["id"]} style={{"display":"flex", "justifyContent":"space-between", "flexWrap":"wrap", "gap":"8px", "padding":"11px 0 11px 14px", "borderLeft":"3px solid " + accent, "borderBottom":"1px solid " + THEME["border"]}}>
+                      <span><strong style={{"fontFamily":FONT_MONO}}>{route["id"]}</strong> · {str(len(route["farmerIds"] as list[str]))} farmer lots → {route["marketId"]}{"  ·  " + status_word if status_word else ""}</span>
+                      <span style={{"color":THEME["muted"], "fontFamily":FONT_MONO, "fontSize":"13px"}}>{assigned_name} · {str(route["distanceKm"])}km</span>
                     </div>
                   }}
-                  {if len(routes) == 0 { <p style={{"color":THEME["muted"], "fontSize":"14px"}}>No routes yet.</p> }}
+                  {if len(routes) == 0 { <p style={{"color":THEME["muted"], "fontFamily":FONT_SERIF, "fontStyle":"italic"}}>No routes yet.</p> }}
                 </div>
               </section>
 
-              <aside style={{"display":"flex", "flexDirection":"column", "gap":"16px"}}>
-                <section style={{"padding":"16px 18px", "backgroundColor":THEME["panel"], "border":"1px solid " + THEME["border"], "borderRadius":THEME["radius"]}}><h2 style={{"fontSize":"17px", "margin":"0 0 12px"}}>Baseline and agent score</h2>
+              <aside style={{"display":"flex", "flexDirection":"column", "gap":"28px"}}>
+                <section>
+                  <h2 style={{"fontFamily":FONT_SERIF, "fontWeight":"400", "margin":"0 0 10px", "fontSize":"19px", "borderBottom":"1px solid " + THEME["borderStrong"], "paddingBottom":"8px"}}>Baseline and agent score</h2>
                   {if score { <div>
-                    <div style={{"display":"grid", "gridTemplateColumns":"1fr 1fr 1fr", "gap":"8px", "padding":"4px 0 10px", "borderBottom":"1px solid " + THEME["border"], "fontSize":"13px"}}>
-                      <strong style={{"color":THEME["muted"], "fontSize":"11px", "textTransform":"uppercase", "letterSpacing":"0.02em"}}>Measure</strong><strong style={{"color":THEME["muted"], "fontSize":"11px", "textTransform":"uppercase", "letterSpacing":"0.02em"}}>Baseline</strong><strong style={{"color":THEME["muted"], "fontSize":"11px", "textTransform":"uppercase", "letterSpacing":"0.02em"}}>Agent</strong>
-                      <span>Spoilage</span><span style={{"color":THEME["muted"]}}>{str(round(baseline_score["spoilagePct"] as float, 1))}%</span><b style={{"color": delta_color if spoilage_better else neutral_color}}>{str(round(agent_score["spoilagePct"] as float, 1))}%{" ↓" if spoilage_better else ""}</b>
-                      <span>Income</span><span style={{"color":THEME["muted"]}}>LKR {str(round(baseline_score["income"] as float, 0))}</span><b style={{"color": delta_color if income_better else neutral_color}}>LKR {str(round(agent_score["income"] as float, 0))}{" ↑" if income_better else ""}</b>
-                      <span>Truck cost</span><span style={{"color":THEME["muted"]}}>LKR {str(round(baseline_score["truckCost"] as float, 0))}</span><b style={{"color": delta_color if cost_better else neutral_color}}>LKR {str(round(agent_score["truckCost"] as float, 0))}{" ↓" if cost_better else ""}</b>
+                    <div style={{"display":"grid", "gridTemplateColumns":"1fr 1fr 1fr", "gap":"6px", "padding":"2px 0 10px", "fontFamily":FONT_MONO, "fontSize":"12px"}}>
+                      <span style={{"color":THEME["subtle"]}}>MEASURE</span><span style={{"color":THEME["subtle"]}}>BASELINE</span><span style={{"color":THEME["subtle"]}}>AGENT</span>
+                      <span style={{"fontFamily":FONT_SANS}}>Spoilage</span><span style={{"color":THEME["muted"]}}>{str(round(baseline_score["spoilagePct"] as float, 1))}%</span><b style={{"color": THEME["green"] if spoilage_better else THEME["ink"]}}>{str(round(agent_score["spoilagePct"] as float, 1))}%{" ↓" if spoilage_better else ""}</b>
+                      <span style={{"fontFamily":FONT_SANS}}>Income</span><span style={{"color":THEME["muted"]}}>{str(round(baseline_score["income"] as float, 0))}</span><b style={{"color": THEME["green"] if income_better else THEME["ink"]}}>{str(round(agent_score["income"] as float, 0))}{" ↑" if income_better else ""}</b>
+                      <span style={{"fontFamily":FONT_SANS}}>Truck cost</span><span style={{"color":THEME["muted"]}}>{str(round(baseline_score["truckCost"] as float, 0))}</span><b style={{"color": THEME["green"] if cost_better else THEME["ink"]}}>{str(round(agent_score["truckCost"] as float, 0))}{" ↓" if cost_better else ""}</b>
                     </div>
-                  </div> } else { <p style={{"color":THEME["muted"]}}>Scores will appear after the baseline plan loads.</p> }}
-                  {if len(steps) > 0 { <div style={{"padding":"12px", "backgroundColor":THEME["greenSoft"], "border":"1px solid " + THEME["green"], "borderRadius":THEME["radiusSm"], "marginTop":"12px"}}><strong style={{"color":THEME["greenStrong"]}}>Route merge complete</strong>{for step in steps { <p key={step["newRouteId"]} style={{"margin":"6px 0 0", "fontSize":"13px"}}>Step {str(step["stepNo"])}: {step["reason"]}</p> }}</div> }}
-                  {if event_done { <div style={{"padding":"12px", "backgroundColor":THEME["ochreSoft"], "border":"1px solid " + THEME["ochre"], "borderRadius":THEME["radiusSm"], "marginTop":"12px"}}>
-                    {if len(removed_ids) > 0 { <p style={{"margin":"0 0 4px", "fontSize":"13px"}}><strong style={{"color":THEME["ochre"]}}>Removed</strong> {" · ".join(removed_ids)}</p> }}
-                    {if len(added_ids) > 0 { <p style={{"margin":"0 0 6px", "fontSize":"13px"}}><strong style={{"color":THEME["ochre"]}}>New</strong> {" · ".join(added_ids)}</p> }}
+                  </div> } else { <p style={{"color":THEME["muted"], "fontFamily":FONT_SERIF, "fontStyle":"italic"}}>Scores will appear after the baseline plan loads.</p> }}
+                  {if len(steps) > 0 { <div style={{"padding":"10px 0 10px 12px", "borderLeft":"3px solid " + THEME["green"], "marginTop":"10px"}}><div style={{"fontFamily":FONT_MONO, "fontSize":"11px", "letterSpacing":"0.05em", "color":THEME["green"], "fontWeight":"700", "marginBottom":"4px"}}>MERGE COMPLETE</div>{for step in steps { <p key={step["newRouteId"]} style={{"margin":"4px 0 0", "fontSize":"13px", "color":THEME["muted"]}}>{str(step["stepNo"])}. {step["reason"]}</p> }}</div> }}
+                  {if event_done { <div style={{"padding":"10px 0 10px 12px", "borderLeft":"3px solid " + THEME["ochre"], "marginTop":"10px"}}>
+                    {if len(removed_ids) > 0 { <p style={{"margin":"0 0 4px", "fontSize":"13px"}}><span style={{"fontFamily":FONT_MONO, "fontSize":"11px", "color":THEME["ochre"]}}>REMOVED</span> {" · ".join(removed_ids)}</p> }}
+                    {if len(added_ids) > 0 { <p style={{"margin":"0 0 6px", "fontSize":"13px"}}><span style={{"fontFamily":FONT_MONO, "fontSize":"11px", "color":THEME["ochre"]}}>NEW</span> {" · ".join(added_ids)}</p> }}
                     {for note in diff_notes { <p key={note} style={{"margin":"0 0 4px", "fontSize":"12px", "color":THEME["muted"]}}>{note}</p> }}
-                    <p style={{"fontSize":"13px", "marginTop":"6px"}}>{explanation}</p>
+                    <p style={{"fontSize":"13px", "marginTop":"8px", "fontFamily":FONT_SERIF}}>{explanation}</p>
                   </div> }}
                 </section>
-                <section style={{"padding":"16px 18px", "backgroundColor":THEME["panel"], "border":"1px solid " + THEME["border"], "borderRadius":THEME["radius"]}}><h2 style={{"fontSize":"17px", "margin":"0 0 10px"}}>Fleet status</h2>{for truck in trucks { <div key={truck["id"]} style={{"padding":"8px 0", "borderBottom":"1px solid " + THEME["border"], "display":"flex", "justifyContent":"space-between", "alignItems":"center", "gap":"10px"}}><span>{truck["name"]} · {str(truck["capacityKg"])} kg</span><strong style={{"padding":"3px 10px", "borderRadius":"999px", "fontSize":"12px", "backgroundColor": THEME["redSoft"] if truck["status"] == "broken" else THEME["greenSoft"], "color":THEME["red"] if truck["status"] == "broken" else THEME["greenStrong"]}}>{truck["status"]}</strong></div> }}</section>
-                <section style={{"padding":"16px 18px", "backgroundColor":THEME["panel"], "border":"1px solid " + THEME["border"], "borderRadius":THEME["radius"]}}><h2 style={{"fontSize":"17px", "margin":"0 0 10px"}}>Market prices</h2>{for market in markets {
-                  prices = market["prices"] as dict[str, float];
-                  <div key={market["id"]} style={{"padding":"8px 0", "borderBottom":"1px solid " + THEME["border"]}}>
-                    <strong>{market["name"]}</strong>
-                    <div style={{"fontSize":"12px", "color":THEME["muted"], "marginTop":"2px"}}>{for crop in prices.keys() { <span key={crop}>{crop} LKR {str(prices[crop])}/kg&nbsp;&nbsp;</span> }}· demand {str(market["demandCapKg"])} kg</div>
-                  </div>
-                }}</section>
+                <section>
+                  <h2 style={{"fontFamily":FONT_SERIF, "fontWeight":"400", "margin":"0 0 8px", "fontSize":"19px", "borderBottom":"1px solid " + THEME["borderStrong"], "paddingBottom":"8px"}}>Fleet status</h2>
+                  {for truck in trucks { <div key={truck["id"]} style={{"padding":"7px 0", "borderBottom":"1px solid " + THEME["border"], "display":"flex", "justifyContent":"space-between", "alignItems":"center"}}><span>{truck["name"]} <span style={{"color":THEME["subtle"], "fontFamily":FONT_MONO, "fontSize":"12px"}}>{str(truck["capacityKg"])}kg</span></span><span style={{"fontFamily":FONT_MONO, "fontSize":"11px", "fontWeight":"700", "color":THEME["red"] if truck["status"] == "broken" else THEME["green"]}}>[{(truck["status"] as str).upper()}]</span></div> }}
+                </section>
+                <section>
+                  <h2 style={{"fontFamily":FONT_SERIF, "fontWeight":"400", "margin":"0 0 8px", "fontSize":"19px", "borderBottom":"1px solid " + THEME["borderStrong"], "paddingBottom":"8px"}}>Market prices</h2>
+                  {for market in markets {
+                    prices = market["prices"] as dict[str, float];
+                    <div key={market["id"]} style={{"padding":"7px 0", "borderBottom":"1px solid " + THEME["border"]}}>
+                      <div>{market["name"]}</div>
+                      <div style={{"fontSize":"12px", "color":THEME["muted"], "fontFamily":FONT_MONO, "marginTop":"2px"}}>{for crop in prices.keys() { <span key={crop}>{crop} {str(prices[crop])}  </span> }}· demand {str(market["demandCapKg"])}kg</div>
+                    </div>
+                  }}
+                </section>
               </aside>
             </div>
 
-            {if event_done { <section style={{"padding":"16px 18px", "backgroundColor":THEME["panel"], "border":"1px solid " + THEME["border"], "borderRadius":THEME["radius"], "marginTop":"18px"}}><h2 style={{"fontSize":"17px", "marginBottom":"4px"}}>Farmer updates</h2>{for message in messages { <div key={message["farmerId"]} style={{"padding":"10px 0", "borderTop":"1px solid " + THEME["border"], "display":"flex", "alignItems":"baseline", "gap":"8px", "flexWrap":"wrap"}}><strong>{message["farmerName"]}</strong><span style={{"fontSize":"11px", "color":THEME["subtle"], "textTransform":"uppercase", "letterSpacing":"0.02em"}}>{message["language"]}</span><span>{message["text"]}</span>{if message["isFallback"] { <span style={{"padding":"2px 8px", "borderRadius":"999px", "backgroundColor":THEME["ochreSoft"], "color":THEME["ochre"], "fontSize":"11px", "fontWeight":"600"}}>fallback</span> }}</div> }}</section> }}
+            {if event_done { <section style={{"marginTop":"30px"}}>
+              <h2 style={{"fontFamily":FONT_SERIF, "fontWeight":"400", "margin":"0 0 8px", "fontSize":"19px", "borderBottom":"1px solid " + THEME["borderStrong"], "paddingBottom":"8px"}}>Farmer updates</h2>
+              {for message in messages { <div key={message["farmerId"]} style={{"padding":"10px 0", "borderBottom":"1px solid " + THEME["border"], "display":"flex", "alignItems":"baseline", "gap":"10px", "flexWrap":"wrap"}}>
+                <strong>{message["farmerName"]}</strong>
+                <span style={{"fontFamily":FONT_MONO, "fontSize":"11px", "color":THEME["subtle"]}}>[{(message["language"] as str).upper()}]</span>
+                <span>{message["text"]}</span>
+                {if message["isFallback"] { <span style={{"fontFamily":FONT_MONO, "fontSize":"11px", "fontWeight":"700", "color":THEME["ochre"]}}>[FALLBACK]</span> }}
+              </div> }}
+            </section> }}
           </div>
         }}
       </main>
