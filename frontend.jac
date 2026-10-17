@@ -1,309 +1,756 @@
-import from .api_layer { fetch_seed, fetch_baseline_plan }
-import from .mock_layer { fetch_merge_routes, fetch_replan }
+import from .api_layer { fetch_seed, fetch_baseline_plan, fetch_merge, fetch_event }
+import from .mock_layer { fetch_replan }
 
-# Second design pass (C, proposed): deliberately NOT the generic SaaS-
-# dashboard look (stat-card grid + soft pill badges + uniform rounded
-# shadow-boxes everywhere). Instead: a serif/mono type pairing, bracket-
-# style status text ([LIVE], [BROKEN]) instead of pill badges, left-
-# accent bars instead of tinted backgrounds, hairline borders instead of
-# drop shadows, and a light/dark toggle (two full palettes, same keys).
-glob THEME_LIGHT: dict[str, str] = {
-    "bg": "#FAF7F0", "sidebar": "#F1ECE0", "panel": "#FFFFFF", "panelAlt": "#F5F1E6",
-    "border": "#DBD4C1", "borderStrong": "#B6AC90",
-    "ink": "#1C1A13", "muted": "#6B6553", "subtle": "#948C73",
-    "green": "#2F6B4F", "blue": "#3A5A8C", "ochre": "#A3691D", "plum": "#6B4A72", "red": "#A23E2E",
-    "onAccent": "#FAF7F0"
+# AgriPulse web app (C). Light, clean dashboard + a mobile-first Farmer view.
+# FRONTEND ONLY: everything here talks to the backend through api_layer.jac
+# (a thin adapter over the CONTRACT v1 endpoints), so when the backend's
+# replan_on_event stops being a stub nothing in this file changes. Until
+# then an event that comes back as the stub is shown as a clearly-labelled
+# SIMULATED report instead of replacing the dashboard with placeholder data.
+
+glob C: dict[str, str] = {
+    "page": "#F4F7F5", "surface": "#FFFFFF", "surface2": "#F8FAF9",
+    "border": "#E1E8E4", "borderStrong": "#C9D4CE",
+    "text": "#15231C", "muted": "#566860", "subtle": "#87978F",
+    "primary": "#17805A", "primaryDark": "#0F6445", "primarySoft": "#E3F4EB",
+    "blue": "#2563EB", "blueSoft": "#E8EFFD",
+    "amber": "#B7791F", "amberSoft": "#FDF3DC",
+    "violet": "#7C3AED", "violetSoft": "#EFE8FD",
+    "red": "#C93B3B", "redSoft": "#FCEAEA",
+    "teal": "#0E8A8A", "rose": "#BE3A6B"
 };
 
-glob THEME_DARK: dict[str, str] = {
-    "bg": "#14120E", "sidebar": "#1A1711", "panel": "#1E1A13", "panelAlt": "#242017",
-    "border": "#362F23", "borderStrong": "#4B4333",
-    "ink": "#ECE6D6", "muted": "#A69D87", "subtle": "#79715D",
-    "green": "#5C9A78", "blue": "#6E8FBF", "ochre": "#C99448", "plum": "#A684B0", "red": "#C16955",
-    "onAccent": "#14120E"
-};
+glob FONT: str = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif";
 
-glob FONT_SERIF: str = "'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif";
-glob FONT_MONO: str = "ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace";
-glob FONT_SANS: str = "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
-
-glob EVENT_BUTTONS: list[dict[str, str]] = [
+glob EVENT_TABS: list[dict[str, str]] = [
     {"type": "truck_breakdown", "label": "Truck breakdown"},
     {"type": "road_closed", "label": "Road closed"},
-    {"type": "price_crash", "label": "Price crash"}
+    {"type": "price_crash", "label": "Price crash"},
+    {"type": "new_harvest", "label": "New harvest"}
 ];
+
+# Farmer-view strings. Sinhala and Tamil are drafts - a native speaker
+# should review them before the demo (see docs/assumptions.md).
+glob UI_TEXT: dict[str, dict[str, str]] = {
+    "en": {
+        "hello": "Hello", "pick": "Choose a farmer", "harvest": "Your harvest", "crop": "Crop",
+        "qty": "Quantity", "fresh": "Stays fresh for", "delivery": "Your delivery", "truck": "Truck",
+        "market": "Market", "distance": "Distance", "time": "Travel time", "loss": "Expected spoilage",
+        "shared": "You share this truck with {n} other farmers.", "alone": "Your harvest travels on its own truck.",
+        "messages": "Messages for you", "none": "No new messages yet.", "log": "Tell us about a new harvest",
+        "ph": "For example: 80kg beans, ready in 2 hours", "send": "Send", "hours": "hours",
+        "sent": "Sent. The agent is planning a pickup for you.", "income": "Expected income"
+    },
+    "si": {
+        "hello": "ආයුබෝවන්", "pick": "ගොවියා තෝරන්න", "harvest": "ඔබේ අස්වැන්න", "crop": "බෝගය",
+        "qty": "ප්‍රමාණය", "fresh": "නැවුම්ව පවතින කාලය", "delivery": "ඔබේ ප්‍රවාහනය", "truck": "ට්‍රක් රථය",
+        "market": "වෙළඳපොළ", "distance": "දුර", "time": "ගමන් කාලය", "loss": "අපේක්ෂිත නරක් වීම",
+        "shared": "ඔබ මෙම ට්‍රක් රථය තවත් ගොවීන් {n} දෙනෙක් සමඟ බෙදාගනී.", "alone": "ඔබේ අස්වැන්න තනිවම ට්‍රක් රථයකින් යයි.",
+        "messages": "ඔබට පණිවිඩ", "none": "තවම නව පණිවිඩ නැත.", "log": "නව අස්වැන්නක් ගැන කියන්න",
+        "ph": "උදා: බෝංචි කිලෝ 80ක්, පැය 2කින් සූදානම්", "send": "යවන්න", "hours": "පැය",
+        "sent": "යවන ලදී. ඔබේ ප්‍රවාහනය සැලසුම් කරමින් සිටී.", "income": "අපේක්ෂිත ආදායම"
+    },
+    "ta": {
+        "hello": "வணக்கம்", "pick": "விவசாயியைத் தேர்ந்தெடுக்கவும்", "harvest": "உங்கள் அறுவடை", "crop": "பயிர்",
+        "qty": "அளவு", "fresh": "புதிதாக இருக்கும் காலம்", "delivery": "உங்கள் போக்குவரத்து", "truck": "லாரி",
+        "market": "சந்தை", "distance": "தூரம்", "time": "பயண நேரம்", "loss": "எதிர்பார்க்கப்படும் வீணாதல்",
+        "shared": "இந்த லாரியை மேலும் {n} விவசாயிகளுடன் பகிர்கிறீர்கள்.", "alone": "உங்கள் அறுவடை தனி லாரியில் செல்கிறது.",
+        "messages": "உங்களுக்கான செய்திகள்", "none": "புதிய செய்திகள் இல்லை.", "log": "புதிய அறுவடை பற்றி சொல்லுங்கள்",
+        "ph": "எ.கா: 80 கிலோ பீன்ஸ், 2 மணி நேரத்தில் தயார்", "send": "அனுப்பு", "hours": "மணி",
+        "sent": "அனுப்பப்பட்டது. உங்கள் போக்குவரத்து திட்டமிடப்படுகிறது.", "income": "எதிர்பார்க்கப்படும் வருமானம்"
+    }
+};
 
 def:pub app -> JsxElement {
     has state: dict[str, any] = {},
         score: dict[str, any] = {},
-        diff: dict[str, any] = {},
+        base_routes_n: int = 0,
         steps: list[dict[str, any]] = [],
         messages: list[dict[str, any]] = [],
-        explanation: str = "",
+        event_report: dict[str, any] = {},
+        removed_ids: list[str] = [],
+        added_ids: list[str] = [],
         loading: bool = True,
+        running: bool = False,
         error: str = "",
-        event_done: bool = False,
-        scenario: str = "Baseline plan",
-        active_event: str = "",
-        new_harvest_text: str = "",
+        scenario: str = "Baseline: every farmer ships alone",
         data_source: str = "real",
-        theme_mode: str = "light";
+        view: str = "dashboard",
+        lang: str = "en",
+        sel_farmer: str = "",
+        event_kind: str = "truck_breakdown",
+        sel_truck: str = "",
+        sel_lane: str = "",
+        sel_market: str = "",
+        sel_crop: str = "",
+        harvest_text: str = "",
+        farmer_text: str = "",
+        farmer_note: str = "",
+        broken_truck_id: str = "",
+        crash_market_id: str = "",
+        crash_crop: str = "",
+        closed_lane: str = "",
+        messages_source: str = "live";
 
     async can with entry {
-        try {
-            seed_result = await fetch_seed();
-            baseline_result = await fetch_baseline_plan();
-            state = baseline_result["state"] as dict[str, any];
-            score = baseline_result["score"] as dict[str, any];
-            data_source = baseline_result["source"] as str;
-        } except Exception {
-            error = "Failed to load seed/baseline data from the server.";
-        }
-        loading = False;
+        await load_all(False);
     }
 
-    def merge_routes_action(e: MouseEvent) {
-        error = "";
-        try {
-            payload = fetch_merge_routes();
-            state = payload["state"] as dict[str, any];
-            score = payload["score"] as dict[str, any];
-            steps = payload["steps"] as list[dict[str, any]];
-            data_source = payload["source"] as str;
-            scenario = "Merged routes";
-            event_done = False;
-            active_event = "";
-        } except Exception {
-            error = "Route merge failed. Retry the merge action.";
-        }
-    }
-
-    def apply_replan_result(payload: dict[str, any], label: str, event_type: str) {
-        state = payload["state"] as dict[str, any];
-        score = payload["score"] as dict[str, any];
-        diff = payload["diff"] as dict[str, any];
-        messages = payload["messages"] as list[dict[str, any]];
-        explanation = payload["explanation"] as str;
-        data_source = payload["source"] as str;
-        scenario = label;
-        active_event = event_type;
-        event_done = True;
-    }
-
-    def fire_event(event_type: str, label: str) {
-        error = "";
-        try {
-            payload = fetch_replan(event_type);
-            apply_replan_result(payload, label, event_type);
-        } except Exception {
-            error = label + " failed. Retry the event.";
-        }
-    }
-
-    def handle_event_click(e: MouseEvent, event_type: str, label: str) {
-        fire_event(event_type, label);
-    }
-
-    def handle_new_harvest_input(e: ChangeEvent) {
-        new_harvest_text = e.target.value;
-    }
-
-    def submit_new_harvest(e: MouseEvent) {
-        error = "";
-        if len(new_harvest_text.strip()) == 0 {
-            error = "Enter a harvest description before submitting.";
-            return;
-        }
-        try {
-            payload = fetch_replan("new_harvest", new_harvest_text);
-            apply_replan_result(payload, "New harvest logged", "new_harvest");
-            new_harvest_text = "";
-        } except Exception {
-            error = "New harvest submission failed. Retry.";
-        }
-    }
-
-    def set_theme(mode: str) {
-        theme_mode = mode;
-    }
-
-    THEME = THEME_LIGHT if theme_mode == "light" else THEME_DARK;
-
+    # ---------- derived data (plain reads of state) ----------
     farmers = (state["farmers"] as list[dict[str, any]]) if state else [];
     harvests = (state["harvests"] as list[dict[str, any]]) if state else [];
     hubs = (state["hubs"] as list[dict[str, any]]) if state else [];
     markets = (state["markets"] as list[dict[str, any]]) if state else [];
     trucks = (state["trucks"] as list[dict[str, any]]) if state else [];
     routes = (state["routes"] as list[dict[str, any]]) if state else [];
-    baseline_score = score["baseline"] as dict[str, any] if score else {};
+    plans = (state["plans"] as list[dict[str, any]]) if state else [];
+    base_score = score["baseline"] as dict[str, any] if score else {};
     agent_score = score["agent"] as dict[str, any] if score else {};
-    removed_ids = diff["removedRouteIds"] as list[str] if diff else [];
-    added_ids = diff["addedRouteIds"] as list[str] if diff else [];
-    diff_notes = diff["notes"] as list[str] if diff and "notes" in diff else [];
 
-    # Real seed (data.jac) and B's mock data use different truck ids/names
-    # entirely, so route rows look the truck up by id rather than
-    # assuming a fixed id scheme.
+    farmer_name_by_id: dict[str, str] = {};
+    for f in farmers { farmer_name_by_id[f["id"] as str] = f["name"] as str; }
     truck_name_by_id: dict[str, str] = {};
-    for t in trucks { truck_name_by_id[t["id"] as str] = t["name"] as str; }
+    truck_cap_by_id: dict[str, float] = {};
     truck_color_by_id: dict[str, str] = {};
-    truck_palette = [THEME["blue"], THEME["ochre"], THEME["plum"], THEME["green"], THEME["red"]];
+    palette = [C["blue"], C["amber"], C["violet"], C["teal"], C["rose"]];
     for i in range(len(trucks)) {
-        truck_color_by_id[trucks[i]["id"] as str] = truck_palette[i % len(truck_palette)];
+        tid = trucks[i]["id"] as str;
+        truck_name_by_id[tid] = trucks[i]["name"] as str;
+        truck_cap_by_id[tid] = trucks[i]["capacityKg"] as float;
+        truck_color_by_id[tid] = palette[i % len(palette)];
+    }
+    hub_name_by_id: dict[str, str] = {};
+    for h in hubs { hub_name_by_id[h["id"] as str] = h["name"] as str; }
+    market_name_by_id: dict[str, str] = {};
+    for m in markets { market_name_by_id[m["id"] as str] = m["name"] as str; }
+    plan_by_route: dict[str, dict[str, any]] = {};
+    for p in plans { plan_by_route[p["routeId"] as str] = p; }
+    harvest_by_farmer: dict[str, dict[str, any]] = {};
+    for hv in harvests { harvest_by_farmer[hv["farmerId"] as str] = hv; }
+    route_by_farmer: dict[str, dict[str, any]] = {};
+    for r in routes {
+        for fid in (r["farmerIds"] as list[str]) { route_by_farmer[fid] = r; }
     }
 
-    spoilage_better = (agent_score["spoilagePct"] as float) < (baseline_score["spoilagePct"] as float) if score else False;
-    income_better = (agent_score["income"] as float) > (baseline_score["income"] as float) if score else False;
-    cost_better = (agent_score["truckCost"] as float) < (baseline_score["truckCost"] as float) if score else False;
+    lanes: list[dict[str, str]] = [];
+    lane_keys: list[str] = [];
+    lane_label_by_key: dict[str, str] = {};
+    for r in routes {
+        l_hub = (r["hubIds"] as list[str])[0] if len(r["hubIds"] as list[str]) > 0 else "";
+        l_mkt = r["marketId"] as str;
+        l_key = l_hub + "->" + l_mkt;
+        if l_key not in lane_keys {
+            lane_keys.append(l_key);
+            l_label = (hub_name_by_id[l_hub] if l_hub in hub_name_by_id else "Hub") + " to " + (market_name_by_id[l_mkt] if l_mkt in market_name_by_id else "Market");
+            lane_label_by_key[l_key] = l_label;
+            lanes.append({"key": l_key, "label": l_label});
+        }
+    }
+    crops: list[str] = [];
+    for m in markets {
+        for cname in (m["prices"] as dict[str, float]).keys() {
+            if cname not in crops { crops.append(cname); }
+        }
+    }
 
-    return <div style={{"minHeight":"100vh", "display":"flex", "backgroundColor":THEME["bg"], "color":THEME["ink"], "fontFamily":FONT_SANS, "fontSize":"15px", "lineHeight":"1.55"}}>
-      <aside style={{"width":"268px", "flexShrink":"0", "backgroundColor":THEME["sidebar"], "borderRight":"1px solid " + THEME["border"], "display":"flex", "flexDirection":"column", "padding":"26px 20px", "position":"sticky", "top":"0", "height":"100vh", "overflowY":"auto"}}>
+    eff_farmer = sel_farmer if sel_farmer in farmer_name_by_id else (farmers[0]["id"] as str if len(farmers) > 0 else "");
+    eff_truck = sel_truck if sel_truck in truck_name_by_id else (trucks[0]["id"] as str if len(trucks) > 0 else "");
+    eff_lane = sel_lane if sel_lane in lane_label_by_key else (lanes[0]["key"] if len(lanes) > 0 else "");
+    eff_market = sel_market if sel_market in market_name_by_id else (markets[0]["id"] as str if len(markets) > 0 else "");
+    eff_crop = sel_crop if sel_crop in crops else (crops[0] if len(crops) > 0 else "");
 
-        <div style={{"marginBottom":"28px"}}>
-          <div style={{"fontFamily":FONT_MONO, "fontSize":"11px", "letterSpacing":"0.12em", "color":THEME["subtle"], "marginBottom":"2px"}}>AGRIPULSE</div>
-          <div style={{"fontFamily":FONT_SERIF, "fontStyle":"italic", "fontSize":"15px", "color":THEME["muted"]}}>Harvest-to-market agent</div>
-          <div style={{"display":"flex", "gap":"10px", "marginTop":"10px", "fontFamily":FONT_MONO, "fontSize":"11px"}}>
-            <span onClick={lambda (e: MouseEvent) { set_theme("light"); }} style={{"cursor":"pointer", "color": THEME["ink"] if theme_mode == "light" else THEME["subtle"], "textDecoration": "underline" if theme_mode == "light" else "none", "fontWeight": "700" if theme_mode == "light" else "400"}}>LIGHT</span>
-            <span style={{"color":THEME["border"]}}>/</span>
-            <span onClick={lambda (e: MouseEvent) { set_theme("dark"); }} style={{"cursor":"pointer", "color": THEME["ink"] if theme_mode == "dark" else THEME["subtle"], "textDecoration": "underline" if theme_mode == "dark" else "none", "fontWeight": "700" if theme_mode == "dark" else "400"}}>DARK</span>
+    my_messages: list[dict[str, any]] = [];
+    my_name = farmer_name_by_id[eff_farmer] if eff_farmer in farmer_name_by_id else "";
+    for mg in messages {
+        if (mg["farmerId"] as str) == eff_farmer or (mg["farmerName"] as str) == my_name {
+            my_messages.append(mg);
+        }
+    }
+
+    def fmt_int(n: float) -> str {
+        s = str(int(round(n)));
+        neg = s.startswith("-");
+        if neg { s = s[1:]; }
+        out = "";
+        count = 0;
+        i = len(s) - 1;
+        while i >= 0 {
+            out = s[i] + out;
+            count += 1;
+            if count % 3 == 0 and i > 0 { out = "," + out; }
+            i -= 1;
+        }
+        return ("-" + out) if neg else out;
+    }
+
+    def pretty(name: str) -> str {
+        return name.replace("_", " ");
+    }
+
+    b_sp = base_score["spoilagePct"] as float if base_score else 0.0;
+    a_sp = agent_score["spoilagePct"] as float if agent_score else 0.0;
+    b_in = base_score["income"] as float if base_score else 0.0;
+    a_in = agent_score["income"] as float if agent_score else 0.0;
+    b_tc = base_score["truckCost"] as float if base_score else 0.0;
+    a_tc = agent_score["truckCost"] as float if agent_score else 0.0;
+    changed = (abs(a_sp - b_sp) > 0.0001) or (abs(a_in - b_in) > 0.5) or (abs(a_tc - b_tc) > 0.5);
+    sp_delta = (("-" if a_sp < b_sp else "+") + str(round(abs(a_sp - b_sp), 1)) + " pts") if changed else "no change yet";
+    in_delta = (("+" if a_in >= b_in else "-") + fmt_int(abs(a_in - b_in)) + " LKR") if changed else "no change yet";
+    tc_delta = (("-" if a_tc <= b_tc else "+") + fmt_int(abs(a_tc - b_tc)) + " LKR") if changed else "no change yet";
+    sp_good = changed and a_sp < b_sp;
+    in_good = changed and a_in > b_in;
+    tc_good = changed and a_tc < b_tc;
+    trips_now = len(routes);
+
+    # ---------- route network drawing (computed, then rendered) ----------
+    hub_used: list[str] = [];
+    mkt_used: list[str] = [];
+    lane_total: dict[str, int] = {};
+    for r in routes {
+        d_hub = (r["hubIds"] as list[str])[0] if len(r["hubIds"] as list[str]) > 0 else "";
+        d_mkt = r["marketId"] as str;
+        if d_hub not in hub_used { hub_used.append(d_hub); }
+        if d_mkt not in mkt_used { mkt_used.append(d_mkt); }
+        d_key = d_hub + "->" + d_mkt;
+        lane_total[d_key] = (lane_total[d_key] if d_key in lane_total else 0) + 1;
+    }
+    row_n = max(max(len(hub_used), len(mkt_used)), 1);
+    svg_h = 40 + row_n * 74;
+    hub_y: dict[str, float] = {};
+    for i in range(len(hub_used)) { hub_y[hub_used[i]] = 52.0 + i * 74.0; }
+    mkt_y: dict[str, float] = {};
+    for i in range(len(mkt_used)) { mkt_y[mkt_used[i]] = 52.0 + i * 74.0; }
+    lane_seen: dict[str, int] = {};
+    paths: list[dict[str, any]] = [];
+    for r in routes {
+        p_hub = (r["hubIds"] as list[str])[0] if len(r["hubIds"] as list[str]) > 0 else "";
+        p_mkt = r["marketId"] as str;
+        p_key = p_hub + "->" + p_mkt;
+        k = lane_seen[p_key] if p_key in lane_seen else 0;
+        lane_seen[p_key] = k + 1;
+        total = lane_total[p_key] if p_key in lane_total else 1;
+        off = (k - (total - 1) / 2.0) * 7.0;
+        y1 = (hub_y[p_hub] if p_hub in hub_y else 52.0) + off;
+        y2 = (mkt_y[p_mkt] if p_mkt in mkt_y else 52.0) + off;
+        n_f = len(r["farmerIds"] as list[str]);
+        w = min(3.0 + n_f * 1.6, 13.0) if total <= 3 else min(2.5 + n_f * 1.2, 9.0);
+        d_str = "M 190 " + str(round(y1, 1)) + " C 340 " + str(round(y1, 1)) + ", 470 " + str(round(y2, 1)) + ", 620 " + str(round(y2, 1));
+        t_id = r["truckId"] as str;
+        paths.append({"id": r["id"], "d": d_str, "w": w, "color": truck_color_by_id[t_id] if t_id in truck_color_by_id else C["subtle"]});
+    }
+
+    # ---------- shared styles ----------
+    card = {"backgroundColor": C["surface"], "border": "1px solid " + C["border"], "borderRadius": "14px", "boxShadow": "0 1px 2px rgba(16,24,20,0.04)"};
+    h2 = {"margin": "0", "fontSize": "17px", "fontWeight": "650", "letterSpacing": "-0.01em", "color": C["text"]};
+    small_label = {"fontSize": "12px", "fontWeight": "600", "color": C["subtle"], "letterSpacing": "0.04em", "textTransform": "uppercase"};
+    btn_primary = {"padding": "11px 18px", "backgroundColor": C["primary"], "color": "#FFFFFF", "border": "1px solid " + C["primary"], "borderRadius": "10px", "fontSize": "14px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit"};
+    btn_ghost = {"padding": "9px 14px", "backgroundColor": C["surface"], "color": C["text"], "border": "1px solid " + C["borderStrong"], "borderRadius": "10px", "fontSize": "14px", "fontWeight": "500", "cursor": "pointer", "fontFamily": "inherit"};
+    field = {"width": "100%", "padding": "10px 12px", "backgroundColor": C["surface"], "color": C["text"], "border": "1px solid " + C["borderStrong"], "borderRadius": "10px", "fontSize": "14px", "fontFamily": "inherit", "boxSizing": "border-box"};
+    t = UI_TEXT[lang] if lang in UI_TEXT else UI_TEXT["en"];
+
+    # ---------- actions ----------
+    async def load_all(force_seed: bool) {
+        loading = True;
+        error = "";
+        try {
+            # The backend rebuilds ONE shared graph on every load_seed, and
+            # overlapping rebuilds can fail or leave an empty read. So read
+            # the baseline FIRST and only seed when the graph is empty (or
+            # when Reset forces it). Each attempt is retried.
+            base = {};
+            attempt = 0;
+            ready = False;
+            need_seed = force_seed;
+            while attempt < 6 and not ready {
+                try {
+                    if need_seed {
+                        await fetch_seed();
+                        need_seed = False;
+                    }
+                    base = await fetch_baseline_plan();
+                    if len(base["state"]["routes"] as list[dict[str, any]]) > 0 {
+                        ready = True;
+                    } else {
+                        need_seed = True;
+                    }
+                } except Exception {
+                    need_seed = True;
+                }
+                attempt += 1;
+            }
+            if not ready { raise Exception("backend not ready"); }
+            state = base["state"] as dict[str, any];
+            score = base["score"] as dict[str, any];
+            base_routes_n = len(base["state"]["routes"] as list[dict[str, any]]);
+            steps = [];
+            messages = [];
+            event_report = {};
+            removed_ids = [];
+            added_ids = [];
+            broken_truck_id = "";
+            crash_market_id = "";
+            crash_crop = "";
+            closed_lane = "";
+            messages_source = "live";
+            farmer_note = "";
+            scenario = "Baseline: every farmer ships alone";
+            data_source = "real";
+        } except Exception {
+            error = "Could not reach the planning backend. Check that the server is running, then press Reset.";
+        }
+        loading = False;
+    }
+
+    async def run_merge() {
+        if running { return; }
+        running = True;
+        error = "";
+        try {
+            res = await fetch_merge();
+            state = res["state"] as dict[str, any];
+            score = res["score"] as dict[str, any];
+            steps = res["steps"] as list[dict[str, any]];
+            event_report = {};
+            removed_ids = [];
+            added_ids = [];
+            scenario = "After merge: farmers pooled onto shared trucks";
+            data_source = "real";
+        } except Exception {
+            error = "The merge step failed. Press Reset and try again.";
+        }
+        running = False;
+    }
+
+    async def run_event(kind: str, text_in: str) {
+        if running { return; }
+        running = True;
+        error = "";
+        t_id = "";
+        e_id = "";
+        m_id = "";
+        crop_v = "";
+        label = "";
+        if kind == "truck_breakdown" {
+            t_id = eff_truck;
+            label = "Truck breakdown: " + (truck_name_by_id[t_id] if t_id in truck_name_by_id else "truck");
+        } elif kind == "road_closed" {
+            e_id = eff_lane;
+            label = "Road closed: " + (lane_label_by_key[e_id] if e_id in lane_label_by_key else "route");
+        } elif kind == "price_crash" {
+            m_id = eff_market;
+            crop_v = eff_crop;
+            label = "Price crash: " + pretty(crop_v) + " at " + (market_name_by_id[m_id] if m_id in market_name_by_id else "market");
+        } else {
+            label = "New harvest logged";
+        }
+        try {
+            res = await fetch_event(kind, t_id, e_id, m_id, crop_v, text_in);
+            expl = res["explanation"] as str;
+            if not expl.startswith("STUB") {
+                dd = res["diff"] as dict[str, any];
+                state = res["state"] as dict[str, any];
+                score = res["score"] as dict[str, any];
+                messages = res["messages"] as list[dict[str, any]];
+                removed_ids = dd["removedRouteIds"] as list[str];
+                added_ids = dd["addedRouteIds"] as list[str];
+                messages_source = "live";
+                event_report = {"title": label, "source": "live", "explanation": expl, "notes": dd["notes"]};
+                data_source = "real";
+            } else {
+                sim = fetch_replan(kind, text_in);
+                sd = sim["diff"] as dict[str, any];
+                messages = sim["messages"] as list[dict[str, any]];
+                messages_source = "simulated";
+                event_report = {"title": label, "source": "simulated", "explanation": sim["explanation"] as str, "notes": sd["notes"]};
+            }
+            scenario = label;
+            broken_truck_id = t_id if kind == "truck_breakdown" else broken_truck_id;
+            crash_market_id = m_id if kind == "price_crash" else crash_market_id;
+            crash_crop = crop_v if kind == "price_crash" else crash_crop;
+            closed_lane = e_id if kind == "road_closed" else closed_lane;
+        } except Exception {
+            error = "That event could not be applied. Press Reset and try again.";
+        }
+        running = False;
+    }
+
+    def set_event_kind(kind: str) {
+        event_kind = kind;
+    }
+
+    async def send_farmer_harvest() {
+        if len(farmer_text.strip()) == 0 { return; }
+        name = farmer_name_by_id[eff_farmer] if eff_farmer in farmer_name_by_id else "";
+        await run_event("new_harvest", name + ": " + farmer_text);
+        farmer_text = "";
+        farmer_note = t["sent"];
+    }
+
+    # ---------- view ----------
+    return <div style={{"minHeight": "100vh", "backgroundColor": C["page"], "color": C["text"], "fontFamily": FONT, "fontSize": "15px", "lineHeight": "1.55"}}>
+      <header style={{"position": "sticky", "top": "0", "zIndex": "20", "backgroundColor": C["surface"], "borderBottom": "1px solid " + C["border"]}}>
+        <div style={{"maxWidth": "1200px", "margin": "0 auto", "padding": "12px 24px", "display": "flex", "alignItems": "center", "gap": "20px", "flexWrap": "wrap"}}>
+          <div style={{"display": "flex", "alignItems": "center", "gap": "10px"}}>
+            <div style={{"width": "34px", "height": "34px", "borderRadius": "10px", "backgroundColor": C["primary"], "color": "#FFFFFF", "display": "grid", "placeItems": "center", "fontWeight": "700", "fontSize": "17px"}}>A</div>
+            <div>
+              <div style={{"fontWeight": "700", "fontSize": "17px", "letterSpacing": "-0.01em", "lineHeight": "1.2"}}>AgriPulse</div>
+              <div style={{"fontSize": "12px", "color": C["muted"]}}>Harvest-to-market planning agent</div>
+            </div>
+          </div>
+          <nav style={{"display": "flex", "gap": "4px", "backgroundColor": C["page"], "padding": "4px", "borderRadius": "12px", "border": "1px solid " + C["border"]}}>
+            <button onClick={lambda (e: MouseEvent) { view = "dashboard"; }} style={{"padding": "8px 16px", "borderRadius": "9px", "border": "none", "cursor": "pointer", "fontFamily": "inherit", "fontSize": "14px", "fontWeight": "600", "backgroundColor": C["surface"] if view == "dashboard" else "transparent", "color": C["text"] if view == "dashboard" else C["muted"], "boxShadow": "0 1px 2px rgba(16,24,20,0.08)" if view == "dashboard" else "none"}}>Dashboard</button>
+            <button onClick={lambda (e: MouseEvent) { view = "farmer"; }} style={{"padding": "8px 16px", "borderRadius": "9px", "border": "none", "cursor": "pointer", "fontFamily": "inherit", "fontSize": "14px", "fontWeight": "600", "backgroundColor": C["surface"] if view == "farmer" else "transparent", "color": C["text"] if view == "farmer" else C["muted"], "boxShadow": "0 1px 2px rgba(16,24,20,0.08)" if view == "farmer" else "none"}}>Farmer view</button>
+          </nav>
+          <div style={{"marginLeft": "auto", "display": "flex", "alignItems": "center", "gap": "12px", "flexWrap": "wrap"}}>
+            <span style={{"fontSize": "13px", "color": C["muted"]}}>All data simulated</span>
+            <button onClick={lambda (e: MouseEvent) { load_all(True); }} disabled={loading or running} style={{"padding": "7px 14px", "backgroundColor": C["surface"], "color": C["text"], "border": "1px solid " + C["borderStrong"], "borderRadius": "9px", "fontSize": "13px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.5" if (loading or running) else "1"}}>Reset demo</button>
           </div>
         </div>
+      </header>
 
-        <div style={{"paddingTop":"14px", "paddingBottom":"18px", "borderTop":"1px solid " + THEME["border"], "marginBottom":"4px"}}>
-          <div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.1em", "color":THEME["subtle"], "marginBottom":"6px"}}>SCENARIO</div>
-          <div style={{"fontFamily":FONT_SERIF, "fontSize":"18px", "marginBottom":"8px"}}>{scenario}</div>
-          <div style={{"fontFamily":FONT_MONO, "fontSize":"11px", "fontWeight":"700", "letterSpacing":"0.04em", "color": THEME["green"] if data_source == "real" else THEME["ochre"]}}>{"[ LIVE — code-computed ]" if data_source == "real" else "[ SIMULATED — mock ]"}</div>
-        </div>
+      <main style={{"maxWidth": "1200px", "margin": "0 auto", "padding": "24px"}}>
+        {if error { <div role="alert" style={{"padding": "14px 16px", "marginBottom": "18px", "backgroundColor": C["redSoft"], "border": "1px solid " + C["red"], "color": C["red"], "borderRadius": "12px", "fontSize": "14px"}}>{error}</div> }}
+        {if loading { <div role="status" style={{"padding": "40px 20px", "textAlign": "center", "color": C["muted"], "backgroundColor": C["surface"], "border": "1px solid " + C["border"], "borderRadius": "14px"}}>Loading the farm network and baseline plan…</div> }}
 
-        <div style={{"paddingTop":"14px", "paddingBottom":"18px", "borderTop":"1px solid " + THEME["border"]}}>
-          <div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.1em", "color":THEME["subtle"], "marginBottom":"12px"}}>SIMULATE AN EVENT</div>
-          <div style={{"display":"flex", "flexDirection":"column", "marginBottom":"16px"}}>
-            {for btn in EVENT_BUTTONS {
-              is_active = active_event == btn["type"];
-              <button
-                key={btn["type"]}
-                onClick={lambda (e: MouseEvent) { handle_event_click(e, btn["type"], btn["label"]); }}
-                disabled={loading}
-                style={{
-                  "width":"100%", "textAlign":"left", "padding":"9px 0 9px 12px", "marginBottom":"2px",
-                  "backgroundColor":"transparent", "color": THEME["ink"] if is_active else THEME["muted"],
-                  "borderTop":"none", "borderRight":"none", "borderBottom":"none",
-                  "borderLeft": "3px solid " + (THEME["green"] if is_active else "transparent"),
-                  "fontSize":"14px", "fontWeight": "700" if is_active else "400", "fontFamily":"inherit",
-                  "cursor":"pointer", "opacity": "0.5" if loading else "1"
-                }}
-              >{btn["label"]}</button>
-            }}
-          </div>
-          <div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.1em", "color":THEME["subtle"], "marginBottom":"8px"}}>NEW HARVEST</div>
-          <textarea
-            value={new_harvest_text}
-            onChange={handle_new_harvest_input}
-            placeholder="~80kg beans near Matale, ready in 2 hours"
-            rows={3}
-            style={{"width":"100%", "padding":"8px 0", "backgroundColor":"transparent", "color":THEME["ink"], "border":"none", "borderBottom":"1px solid " + THEME["borderStrong"], "borderRadius":"0", "fontSize":"13px", "resize":"vertical", "marginBottom":"10px", "fontFamily":"inherit"}}
-          />
-          <button onClick={submit_new_harvest} disabled={loading} style={{"width":"100%", "padding":"9px 0", "backgroundColor":"transparent", "color":THEME["blue"], "border":"1px solid " + THEME["blue"], "borderRadius":"0", "fontSize":"13px", "fontWeight":"700", "fontFamily":FONT_MONO, "letterSpacing":"0.03em", "cursor":"pointer", "opacity": "0.5" if loading else "1"}}>LOG HARVEST</button>
-        </div>
-
-        <div style={{"paddingTop":"18px", "borderTop":"1px solid " + THEME["border"]}}>
-          <button onClick={merge_routes_action} disabled={loading} style={{"width":"100%", "padding":"11px 0", "backgroundColor":THEME["green"], "color":THEME["onAccent"], "border":"none", "borderRadius":"0", "fontSize":"14px", "fontWeight":"700", "fontFamily":FONT_SERIF, "fontStyle":"italic", "cursor":"pointer", "opacity": "0.5" if loading else "1"}}>Merge routes</button>
-        </div>
-
-        <div style={{"marginTop":"auto", "fontFamily":FONT_SERIF, "fontStyle":"italic", "fontSize":"12px", "color":THEME["subtle"], "paddingTop":"18px", "borderTop":"1px solid " + THEME["border"]}}>All data simulated. Built in Jac for the Jaseci AI Hackathon.</div>
-      </aside>
-
-      <main style={{"flex":"1", "padding":"34px 38px", "maxWidth":"1240px"}}>
-        <div style={{"marginBottom":"26px"}}>
-          <h1 style={{"fontFamily":FONT_SERIF, "fontSize":"32px", "fontWeight":"400", "margin":"0 0 6px", "letterSpacing":"-0.01em"}}>Sri Lanka produce network</h1>
-          <p style={{"margin":"0", "color":THEME["muted"], "fontFamily":FONT_SERIF, "fontStyle":"italic", "fontSize":"15px"}}>Harvest readiness, route performance and disruption planning.</p>
-        </div>
-        {if error { <div role="alert" style={{"padding":"12px 16px", "marginBottom":"18px", "color":THEME["red"], "borderLeft":"3px solid " + THEME["red"], "backgroundColor":THEME["panelAlt"], "fontSize":"14px"}}>{error}</div> }}
-        {if loading { <div role="status" style={{"padding":"16px 0", "color":THEME["muted"], "fontFamily":FONT_SERIF, "fontStyle":"italic"}}>Loading seed and baseline data…</div> }}
         {if not loading {
           <div>
-            <div style={{"display":"flex", "flexWrap":"wrap", "borderTop":"1px solid " + THEME["borderStrong"], "borderBottom":"1px solid " + THEME["borderStrong"], "padding":"16px 0", "marginBottom":"26px"}}>
-              <div style={{"paddingRight":"28px", "marginRight":"28px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.08em", "color":THEME["subtle"]}}>FARMERS</div><div style={{"fontFamily":FONT_MONO, "fontSize":"26px", "fontWeight":"700"}}>{str(len(farmers))}</div></div>
-              <div style={{"paddingRight":"28px", "marginRight":"28px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.08em", "color":THEME["subtle"]}}>HARVESTS</div><div style={{"fontFamily":FONT_MONO, "fontSize":"26px", "fontWeight":"700"}}>{str(len(harvests))}</div></div>
-              <div style={{"paddingRight":"28px", "marginRight":"28px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.08em", "color":THEME["subtle"]}}>HUBS</div><div style={{"fontFamily":FONT_MONO, "fontSize":"26px", "fontWeight":"700"}}>{str(len(hubs))}</div></div>
-              <div style={{"paddingRight":"28px", "marginRight":"28px", "borderRight":"1px solid " + THEME["border"]}}><div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.08em", "color":THEME["subtle"]}}>MARKETS</div><div style={{"fontFamily":FONT_MONO, "fontSize":"26px", "fontWeight":"700"}}>{str(len(markets))}</div></div>
-              <div><div style={{"fontFamily":FONT_MONO, "fontSize":"10px", "letterSpacing":"0.08em", "color":THEME["subtle"]}}>ROUTES</div><div style={{"fontFamily":FONT_MONO, "fontSize":"26px", "fontWeight":"700"}}>{str(len(routes))}<span style={{"fontSize":"14px", "color":THEME["subtle"], "fontWeight":"400"}}> / {str(len(trucks))} trucks</span></div></div>
-            </div>
-
-            <div style={{"display":"grid", "gridTemplateColumns":"minmax(0, 1.7fr) minmax(280px, 1fr)", "gap":"30px", "alignItems":"start"}}>
-              <section style={{"minWidth":"0"}}>
-                <div style={{"display":"flex", "justifyContent":"space-between", "alignItems":"baseline", "borderBottom":"1px solid " + THEME["borderStrong"], "paddingBottom":"8px", "marginBottom":"4px"}}>
-                  <h2 style={{"fontFamily":FONT_SERIF, "fontWeight":"400", "margin":"0", "fontSize":"19px"}}>Routes and assignments</h2>
-                  <span style={{"fontFamily":FONT_MONO, "fontSize":"12px", "color":THEME["subtle"]}}>{str(len(routes))} active</span>
+            {if view == "dashboard" {
+              <div>
+                <div style={{"display": "flex", "justifyContent": "space-between", "alignItems": "flex-end", "gap": "16px", "flexWrap": "wrap", "marginBottom": "18px"}}>
+                  <div>
+                    <h1 style={{"margin": "0 0 4px", "fontSize": "28px", "fontWeight": "700", "letterSpacing": "-0.02em"}}>Sri Lanka produce network</h1>
+                    <div style={{"color": C["muted"], "fontSize": "15px"}}>{scenario}</div>
+                  </div>
+                  <div style={{"display": "flex", "alignItems": "center", "gap": "8px", "fontSize": "13px", "fontWeight": "600", "color": C["primaryDark"], "backgroundColor": C["primarySoft"], "padding": "7px 12px", "borderRadius": "999px"}}>
+                    <span style={{"width": "8px", "height": "8px", "borderRadius": "50%", "backgroundColor": C["primary"], "display": "inline-block"}}></span>
+                    Live backend · {str(len(farmers))} farmers · {str(len(hubs))} hubs · {str(len(markets))} markets
+                  </div>
                 </div>
-                <div style={{"display":"flex", "gap":"16px", "flexWrap":"wrap", "padding":"10px 0", "borderBottom":"1px solid " + THEME["border"], "marginBottom":"4px", "fontFamily":FONT_MONO, "fontSize":"12px"}}>
-                  {for t in trucks { <span key={t["id"]} style={{"color":truck_color_by_id[t["id"] as str], "borderLeft":"3px solid " + truck_color_by_id[t["id"] as str], "paddingLeft":"6px"}}>{t["name"]}</span> }}
-                  {if event_done { <span style={{"color":THEME["red"], "borderLeft":"3px dashed " + THEME["red"], "paddingLeft":"6px"}}>removed</span><span style={{"color":THEME["green"], "borderLeft":"3px solid " + THEME["green"], "paddingLeft":"6px"}}>new</span> }}
-                </div>
-                <div>
-                  {for route in routes {
-                    removed = route["id"] in removed_ids;
-                    added = route["id"] in added_ids;
-                    truck_id = route["truckId"] as str;
-                    assigned_name = truck_name_by_id[truck_id] if truck_id in truck_name_by_id else truck_id;
-                    accent = THEME["red"] if removed else THEME["green"] if added else THEME["border"];
-                    status_word = "REMOVED" if removed else "NEW" if added else "";
-                    <div key={route["id"]} style={{"display":"flex", "justifyContent":"space-between", "flexWrap":"wrap", "gap":"8px", "padding":"11px 0 11px 14px", "borderLeft":"3px solid " + accent, "borderBottom":"1px solid " + THEME["border"]}}>
-                      <span><strong style={{"fontFamily":FONT_MONO}}>{route["id"]}</strong> · {str(len(route["farmerIds"] as list[str]))} farmer lots → {route["marketId"]}{"  ·  " + status_word if status_word else ""}</span>
-                      <span style={{"color":THEME["muted"], "fontFamily":FONT_MONO, "fontSize":"13px"}}>{assigned_name} · {str(route["distanceKm"])}km</span>
-                    </div>
-                  }}
-                  {if len(routes) == 0 { <p style={{"color":THEME["muted"], "fontFamily":FONT_SERIF, "fontStyle":"italic"}}>No routes yet.</p> }}
-                </div>
-              </section>
 
-              <aside style={{"display":"flex", "flexDirection":"column", "gap":"28px"}}>
-                <section>
-                  <h2 style={{"fontFamily":FONT_SERIF, "fontWeight":"400", "margin":"0 0 10px", "fontSize":"19px", "borderBottom":"1px solid " + THEME["borderStrong"], "paddingBottom":"8px"}}>Baseline and agent score</h2>
-                  {if score { <div>
-                    <div style={{"display":"grid", "gridTemplateColumns":"1fr 1fr 1fr", "gap":"6px", "padding":"2px 0 10px", "fontFamily":FONT_MONO, "fontSize":"12px"}}>
-                      <span style={{"color":THEME["subtle"]}}>MEASURE</span><span style={{"color":THEME["subtle"]}}>BASELINE</span><span style={{"color":THEME["subtle"]}}>AGENT</span>
-                      <span style={{"fontFamily":FONT_SANS}}>Spoilage</span><span style={{"color":THEME["muted"]}}>{str(round(baseline_score["spoilagePct"] as float, 1))}%</span><b style={{"color": THEME["green"] if spoilage_better else THEME["ink"]}}>{str(round(agent_score["spoilagePct"] as float, 1))}%{" ↓" if spoilage_better else ""}</b>
-                      <span style={{"fontFamily":FONT_SANS}}>Income</span><span style={{"color":THEME["muted"]}}>{str(round(baseline_score["income"] as float, 0))}</span><b style={{"color": THEME["green"] if income_better else THEME["ink"]}}>{str(round(agent_score["income"] as float, 0))}{" ↑" if income_better else ""}</b>
-                      <span style={{"fontFamily":FONT_SANS}}>Truck cost</span><span style={{"color":THEME["muted"]}}>{str(round(baseline_score["truckCost"] as float, 0))}</span><b style={{"color": THEME["green"] if cost_better else THEME["ink"]}}>{str(round(agent_score["truckCost"] as float, 0))}{" ↓" if cost_better else ""}</b>
-                    </div>
-                  </div> } else { <p style={{"color":THEME["muted"], "fontFamily":FONT_SERIF, "fontStyle":"italic"}}>Scores will appear after the baseline plan loads.</p> }}
-                  {if len(steps) > 0 { <div style={{"padding":"10px 0 10px 12px", "borderLeft":"3px solid " + THEME["green"], "marginTop":"10px"}}><div style={{"fontFamily":FONT_MONO, "fontSize":"11px", "letterSpacing":"0.05em", "color":THEME["green"], "fontWeight":"700", "marginBottom":"4px"}}>MERGE COMPLETE</div>{for step in steps { <p key={step["newRouteId"]} style={{"margin":"4px 0 0", "fontSize":"13px", "color":THEME["muted"]}}>{str(step["stepNo"])}. {step["reason"]}</p> }}</div> }}
-                  {if event_done { <div style={{"padding":"10px 0 10px 12px", "borderLeft":"3px solid " + THEME["ochre"], "marginTop":"10px"}}>
-                    {if len(removed_ids) > 0 { <p style={{"margin":"0 0 4px", "fontSize":"13px"}}><span style={{"fontFamily":FONT_MONO, "fontSize":"11px", "color":THEME["ochre"]}}>REMOVED</span> {" · ".join(removed_ids)}</p> }}
-                    {if len(added_ids) > 0 { <p style={{"margin":"0 0 6px", "fontSize":"13px"}}><span style={{"fontFamily":FONT_MONO, "fontSize":"11px", "color":THEME["ochre"]}}>NEW</span> {" · ".join(added_ids)}</p> }}
-                    {for note in diff_notes { <p key={note} style={{"margin":"0 0 4px", "fontSize":"12px", "color":THEME["muted"]}}>{note}</p> }}
-                    <p style={{"fontSize":"13px", "marginTop":"8px", "fontFamily":FONT_SERIF}}>{explanation}</p>
-                  </div> }}
-                </section>
-                <section>
-                  <h2 style={{"fontFamily":FONT_SERIF, "fontWeight":"400", "margin":"0 0 8px", "fontSize":"19px", "borderBottom":"1px solid " + THEME["borderStrong"], "paddingBottom":"8px"}}>Fleet status</h2>
-                  {for truck in trucks { <div key={truck["id"]} style={{"padding":"7px 0", "borderBottom":"1px solid " + THEME["border"], "display":"flex", "justifyContent":"space-between", "alignItems":"center"}}><span>{truck["name"]} <span style={{"color":THEME["subtle"], "fontFamily":FONT_MONO, "fontSize":"12px"}}>{str(truck["capacityKg"])}kg</span></span><span style={{"fontFamily":FONT_MONO, "fontSize":"11px", "fontWeight":"700", "color":THEME["red"] if truck["status"] == "broken" else THEME["green"]}}>[{(truck["status"] as str).upper()}]</span></div> }}
-                </section>
-                <section>
-                  <h2 style={{"fontFamily":FONT_SERIF, "fontWeight":"400", "margin":"0 0 8px", "fontSize":"19px", "borderBottom":"1px solid " + THEME["borderStrong"], "paddingBottom":"8px"}}>Market prices</h2>
-                  {for market in markets {
-                    prices = market["prices"] as dict[str, float];
-                    <div key={market["id"]} style={{"padding":"7px 0", "borderBottom":"1px solid " + THEME["border"]}}>
-                      <div>{market["name"]}</div>
-                      <div style={{"fontSize":"12px", "color":THEME["muted"], "fontFamily":FONT_MONO, "marginTop":"2px"}}>{for crop in prices.keys() { <span key={crop}>{crop} {str(prices[crop])}  </span> }}· demand {str(market["demandCapKg"])}kg</div>
-                    </div>
-                  }}
-                </section>
-              </aside>
-            </div>
+                <div style={{"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(min(100%, 150px), 1fr))", "gap": "14px", "marginBottom": "18px"}}>
+                  <div style={card}><div style={{"padding": "18px 20px"}}>
+                    <div style={small_label}>Spoilage</div>
+                    <div style={{"fontSize": "30px", "fontWeight": "700", "letterSpacing": "-0.02em", "fontVariantNumeric": "tabular-nums"}}>{str(round(a_sp, 1))}%</div>
+                    <div style={{"fontSize": "13px", "color": C["muted"]}}>Baseline {str(round(b_sp, 1))}%</div>
+                    <div style={{"marginTop": "8px", "fontSize": "13px", "fontWeight": "600", "color": C["primaryDark"] if sp_good else C["subtle"]}}>{sp_delta}</div>
+                  </div></div>
+                  <div style={card}><div style={{"padding": "18px 20px"}}>
+                    <div style={small_label}>Farmer income</div>
+                    <div style={{"fontSize": "30px", "fontWeight": "700", "letterSpacing": "-0.02em", "fontVariantNumeric": "tabular-nums"}}>{fmt_int(a_in)}</div>
+                    <div style={{"fontSize": "13px", "color": C["muted"]}}>Baseline {fmt_int(b_in)} LKR</div>
+                    <div style={{"marginTop": "8px", "fontSize": "13px", "fontWeight": "600", "color": C["primaryDark"] if in_good else C["subtle"]}}>{in_delta}</div>
+                  </div></div>
+                  <div style={card}><div style={{"padding": "18px 20px"}}>
+                    <div style={small_label}>Truck cost</div>
+                    <div style={{"fontSize": "30px", "fontWeight": "700", "letterSpacing": "-0.02em", "fontVariantNumeric": "tabular-nums"}}>{fmt_int(a_tc)}</div>
+                    <div style={{"fontSize": "13px", "color": C["muted"]}}>Baseline {fmt_int(b_tc)} LKR</div>
+                    <div style={{"marginTop": "8px", "fontSize": "13px", "fontWeight": "600", "color": C["primaryDark"] if tc_good else C["subtle"]}}>{tc_delta}</div>
+                  </div></div>
+                  <div style={card}><div style={{"padding": "18px 20px"}}>
+                    <div style={small_label}>Truck trips</div>
+                    <div style={{"fontSize": "30px", "fontWeight": "700", "letterSpacing": "-0.02em", "fontVariantNumeric": "tabular-nums"}}>{str(trips_now)}</div>
+                    <div style={{"fontSize": "13px", "color": C["muted"]}}>Baseline {str(base_routes_n)} solo trips</div>
+                    <div style={{"marginTop": "8px", "fontSize": "13px", "fontWeight": "600", "color": C["primaryDark"] if trips_now < base_routes_n else C["subtle"]}}>{("-" + str(base_routes_n - trips_now) + " trips") if trips_now < base_routes_n else "no change yet"}</div>
+                  </div></div>
+                </div>
 
-            {if event_done { <section style={{"marginTop":"30px"}}>
-              <h2 style={{"fontFamily":FONT_SERIF, "fontWeight":"400", "margin":"0 0 8px", "fontSize":"19px", "borderBottom":"1px solid " + THEME["borderStrong"], "paddingBottom":"8px"}}>Farmer updates</h2>
-              {for message in messages { <div key={message["farmerId"]} style={{"padding":"10px 0", "borderBottom":"1px solid " + THEME["border"], "display":"flex", "alignItems":"baseline", "gap":"10px", "flexWrap":"wrap"}}>
-                <strong>{message["farmerName"]}</strong>
-                <span style={{"fontFamily":FONT_MONO, "fontSize":"11px", "color":THEME["subtle"]}}>[{(message["language"] as str).upper()}]</span>
-                <span>{message["text"]}</span>
-                {if message["isFallback"] { <span style={{"fontFamily":FONT_MONO, "fontSize":"11px", "fontWeight":"700", "color":THEME["ochre"]}}>[FALLBACK]</span> }}
-              </div> }}
-            </section> }}
+                <div style={card}>
+                  <div style={{"padding": "20px 22px"}}>
+                    <div style={{"display": "flex", "justifyContent": "space-between", "alignItems": "center", "flexWrap": "wrap", "gap": "12px", "marginBottom": "16px"}}>
+                      <h2 style={h2}>Run the agent</h2>
+                      <div style={{"fontSize": "13px", "color": C["muted"]}}>Step 1: merge routes. Step 2: break something and watch it re-plan.</div>
+                    </div>
+                    <div style={{"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", "gap": "16px"}}>
+                      <div style={{"padding": "16px", "backgroundColor": C["surface2"], "border": "1px solid " + C["border"], "borderRadius": "12px"}}>
+                        <div style={small_label}>1 · Pool farmers</div>
+                        <p style={{"margin": "6px 0 12px", "fontSize": "14px", "color": C["muted"]}}>Combine solo trips onto shared trucks wherever capacity and net value allow.</p>
+                        <button onClick={lambda (e: MouseEvent) { run_merge(); }} disabled={running} style={{"padding": "11px 18px", "backgroundColor": C["primary"], "color": "#FFFFFF", "border": "1px solid " + C["primary"], "borderRadius": "10px", "fontSize": "14px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{"Working…" if running else "Merge routes"}</button>
+                      </div>
+                      <div style={{"padding": "16px", "backgroundColor": C["surface2"], "border": "1px solid " + C["border"], "borderRadius": "12px"}}>
+                        <div style={small_label}>2 · Simulate a disruption</div>
+                        <div style={{"display": "flex", "gap": "6px", "flexWrap": "wrap", "margin": "10px 0 12px"}}>
+                          {for tab in EVENT_TABS {
+                            active = event_kind == tab["type"];
+                            <button key={tab["type"]} onClick={lambda (e: MouseEvent) { set_event_kind(tab["type"]); }} style={{"padding": "7px 12px", "borderRadius": "999px", "fontSize": "13px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit", "border": "1px solid " + (C["primary"] if active else C["borderStrong"]), "backgroundColor": C["primary"] if active else C["surface"], "color": "#FFFFFF" if active else C["text"]}}>{tab["label"]}</button>
+                          }}
+                        </div>
+                        {if event_kind == "truck_breakdown" {
+                          <select value={eff_truck} onChange={lambda (e: ChangeEvent) { sel_truck = e.target.value; }} style={field}>
+                            {for tr in trucks { <option key={tr["id"] as str} value={tr["id"] as str}>{tr["name"]} · {fmt_int(tr["capacityKg"] as float)} kg</option> }}
+                          </select>
+                        }}
+                        {if event_kind == "road_closed" {
+                          <select value={eff_lane} onChange={lambda (e: ChangeEvent) { sel_lane = e.target.value; }} style={field}>
+                            {for ln in lanes { <option key={ln["key"]} value={ln["key"]}>{ln["label"]}</option> }}
+                          </select>
+                        }}
+                        {if event_kind == "price_crash" {
+                          <div style={{"display": "flex", "gap": "8px", "flexWrap": "wrap"}}>
+                            <select value={eff_market} onChange={lambda (e: ChangeEvent) { sel_market = e.target.value; }} style={{"flex": "1", "minWidth": "150px", "padding": "10px 12px", "border": "1px solid " + C["borderStrong"], "borderRadius": "10px", "fontSize": "14px", "fontFamily": "inherit", "backgroundColor": C["surface"], "color": C["text"]}}>
+                              {for mk in markets { <option key={mk["id"] as str} value={mk["id"] as str}>{mk["name"]}</option> }}
+                            </select>
+                            <select value={eff_crop} onChange={lambda (e: ChangeEvent) { sel_crop = e.target.value; }} style={{"flex": "1", "minWidth": "120px", "padding": "10px 12px", "border": "1px solid " + C["borderStrong"], "borderRadius": "10px", "fontSize": "14px", "fontFamily": "inherit", "backgroundColor": C["surface"], "color": C["text"]}}>
+                              {for cr in crops { <option key={cr} value={cr}>{pretty(cr)}</option> }}
+                            </select>
+                          </div>
+                        }}
+                        {if event_kind == "new_harvest" {
+                          <textarea value={harvest_text} onChange={lambda (e: ChangeEvent) { harvest_text = e.target.value; }} rows={2} placeholder="e.g. 80kg beans near Matale, ready in 2 hours" style={field}></textarea>
+                        }}
+                        <div style={{"marginTop": "12px"}}>
+                          <button onClick={lambda (e: MouseEvent) { run_event(event_kind, harvest_text); }} disabled={running} style={{"padding": "10px 16px", "backgroundColor": C["text"], "color": "#FFFFFF", "border": "1px solid " + C["text"], "borderRadius": "10px", "fontSize": "14px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{"Working…" if running else "Run event"}</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(min(100%, 420px), 1fr))", "gap": "18px", "marginTop": "18px", "alignItems": "start"}}>
+                  <div style={card}>
+                    <div style={{"padding": "18px 22px", "borderBottom": "1px solid " + C["border"], "display": "flex", "justifyContent": "space-between", "alignItems": "baseline", "flexWrap": "wrap", "gap": "8px"}}>
+                      <h2 style={h2}>Route network</h2>
+                      <span style={{"fontSize": "13px", "color": C["muted"]}}>Line thickness = farmers on that truck</span>
+                    </div>
+                    <div style={{"padding": "8px 12px 4px", "overflowX": "auto"}}>
+                      <svg viewBox={"0 0 820 " + str(svg_h)} style={{"width": "100%", "height": "auto", "minWidth": "560px"}} role="img" aria-label="Routes from hubs to markets, coloured by truck">
+                        {for pa in paths { <path key={pa["id"] as str} d={pa["d"] as str} fill="none" stroke={pa["color"] as str} strokeWidth={pa["w"] as float} strokeLinecap="round" opacity="0.8" /> }}
+                        {for hid in hub_used {
+                          hy = hub_y[hid] if hid in hub_y else 52.0;
+                          <g key={"h" + hid}>
+                            <circle cx="190" cy={hy} r="9" fill="#FFFFFF" stroke={C["text"]} strokeWidth="2.5" />
+                            <text x="172" y={hy + 5} textAnchor="end" fontSize="13" fontWeight="600" fill={C["text"]}>{hub_name_by_id[hid] if hid in hub_name_by_id else "Hub"}</text>
+                          </g>
+                        }}
+                        {for mid in mkt_used {
+                          my = mkt_y[mid] if mid in mkt_y else 52.0;
+                          <g key={"m" + mid}>
+                            <circle cx="620" cy={my} r="9" fill={C["primary"]} stroke="#FFFFFF" strokeWidth="2.5" />
+                            <text x="638" y={my + 5} fontSize="13" fontWeight="600" fill={C["text"]}>{market_name_by_id[mid] if mid in market_name_by_id else "Market"}</text>
+                          </g>
+                        }}
+                      </svg>
+                    </div>
+                    <div style={{"padding": "4px 22px 16px", "display": "flex", "gap": "14px", "flexWrap": "wrap", "fontSize": "13px", "color": C["muted"]}}>
+                      {for tk in trucks { <span key={tk["id"] as str} style={{"display": "inline-flex", "alignItems": "center", "gap": "6px"}}><span style={{"width": "14px", "height": "4px", "borderRadius": "2px", "backgroundColor": truck_color_by_id[tk["id"] as str], "display": "inline-block"}}></span>{tk["name"]}</span> }}
+                    </div>
+                    <div style={{"borderTop": "1px solid " + C["border"]}}>
+                      {for r in routes {
+                        rid = r["id"] as str;
+                        r_ids = r["farmerIds"] as list[str];
+                        r_n = len(r_ids);
+                        names_txt = "";
+                        shown = 0;
+                        for fid in r_ids {
+                            if shown < 2 { names_txt = names_txt + ("" if shown == 0 else ", ") + (farmer_name_by_id[fid] if fid in farmer_name_by_id else "Farmer"); }
+                            shown += 1;
+                        }
+                        if r_n > 2 { names_txt = names_txt + " +" + str(r_n - 2) + " more"; }
+                        r_hub = (r["hubIds"] as list[str])[0] if len(r["hubIds"] as list[str]) > 0 else "";
+                        r_mkt = r["marketId"] as str;
+                        r_truck = r["truckId"] as str;
+                        r_plan = plan_by_route[rid] if rid in plan_by_route else {};
+                        is_removed = rid in removed_ids;
+                        is_added = rid in added_ids;
+                        is_closed = (r_hub + "->" + r_mkt) == closed_lane;
+                        accent = C["red"] if is_removed else C["primary"] if is_added else (truck_color_by_id[r_truck] if r_truck in truck_color_by_id else C["border"]);
+                        <div key={rid} style={{"display": "flex", "gap": "14px", "padding": "14px 22px 14px 0", "borderBottom": "1px solid " + C["border"], "alignItems": "stretch"}}>
+                          <div style={{"width": "4px", "borderRadius": "0 4px 4px 0", "backgroundColor": accent, "flexShrink": "0"}}></div>
+                          <div style={{"flex": "1", "minWidth": "0"}}>
+                            <div style={{"display": "flex", "justifyContent": "space-between", "gap": "10px", "flexWrap": "wrap"}}>
+                              <div style={{"fontWeight": "600"}}>{("Shared truck · " + str(r_n) + " farmers") if r_n > 1 else "Solo trip · 1 farmer"}<span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "500", "color": C["subtle"]}}>{rid}</span>{if is_closed { <span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "600", "color": C["red"], "backgroundColor": C["redSoft"], "padding": "2px 8px", "borderRadius": "999px"}}>road closed</span> }}{if is_added { <span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "600", "color": C["primaryDark"], "backgroundColor": C["primarySoft"], "padding": "2px 8px", "borderRadius": "999px"}}>new</span> }}{if is_removed { <span style={{"marginLeft": "8px", "fontSize": "12px", "fontWeight": "600", "color": C["red"], "backgroundColor": C["redSoft"], "padding": "2px 8px", "borderRadius": "999px"}}>removed</span> }}</div>
+                              <div style={{"fontSize": "13px", "color": C["muted"]}}>{truck_name_by_id[r_truck] if r_truck in truck_name_by_id else "Truck"}</div>
+                            </div>
+                            <div style={{"fontSize": "13px", "color": C["muted"], "marginTop": "2px"}}>{names_txt}</div>
+                            <div style={{"fontSize": "13px", "color": C["muted"], "marginTop": "4px"}}>{hub_name_by_id[r_hub] if r_hub in hub_name_by_id else "Hub"} to {market_name_by_id[r_mkt] if r_mkt in market_name_by_id else "Market"} · {str(round(r["distanceKm"] as float, 1))} km · {str(round(r["hours"] as float, 1))} h{(" · spoilage " + str(round(r_plan["expectedSpoilagePct"] as float, 1)) + "% · income " + fmt_int(r_plan["expectedIncome"] as float) + " LKR") if r_plan else ""}</div>
+                          </div>
+                        </div>
+                      }}
+                    </div>
+                  </div>
+
+                  <div style={{"display": "flex", "flexDirection": "column", "gap": "18px"}}>
+                    <div style={card}>
+                      <div style={{"padding": "18px 22px", "borderBottom": "1px solid " + C["border"]}}><h2 style={h2}>Agent activity</h2></div>
+                      <div style={{"padding": "16px 22px"}}>
+                        {if len(steps) == 0 and not event_report { <p style={{"margin": "0", "color": C["muted"], "fontSize": "14px"}}>Nothing yet. Press <strong>Merge routes</strong> to watch the agent pool farmers step by step.</p> }}
+                        {if len(steps) > 0 {
+                          <div>
+                            <div style={{"fontSize": "13px", "fontWeight": "600", "color": C["primaryDark"], "marginBottom": "8px"}}>Merge: {str(len(steps))} steps</div>
+                            <div style={{"maxHeight": "260px", "overflowY": "auto", "paddingRight": "6px"}}>
+                              {for st in steps { <div key={st["newRouteId"] as str} style={{"display": "flex", "gap": "10px", "padding": "8px 0", "borderBottom": "1px solid " + C["border"], "fontSize": "13px"}}><span style={{"flexShrink": "0", "width": "22px", "height": "22px", "borderRadius": "50%", "backgroundColor": C["primarySoft"], "color": C["primaryDark"], "display": "grid", "placeItems": "center", "fontSize": "12px", "fontWeight": "700"}}>{str(st["stepNo"])}</span><span style={{"color": C["muted"]}}>{st["reason"]}</span></div> }}
+                            </div>
+                          </div>
+                        }}
+                        {if event_report {
+                          <div style={{"marginTop": "14px" if len(steps) > 0 else "0", "padding": "14px 16px", "borderRadius": "12px", "backgroundColor": C["surface2"] if event_report["source"] == "live" else C["amberSoft"], "border": "1px solid " + (C["border"] if event_report["source"] == "live" else C["amber"])}}>
+                            <div style={{"display": "flex", "justifyContent": "space-between", "gap": "8px", "flexWrap": "wrap", "alignItems": "center"}}>
+                              <strong style={{"fontSize": "14px"}}>{event_report["title"]}</strong>
+                              <span style={{"fontSize": "12px", "fontWeight": "700", "color": C["primaryDark"] if event_report["source"] == "live" else C["amber"]}}>{"LIVE ENGINE" if event_report["source"] == "live" else "SIMULATED REPORT"}</span>
+                            </div>
+                            {for note in (event_report["notes"] as list[str]) { <p key={note} style={{"margin": "8px 0 0", "fontSize": "13px", "color": C["muted"]}}>{note}</p> }}
+                            <p style={{"margin": "8px 0 0", "fontSize": "14px"}}>{event_report["explanation"]}</p>
+                            {if event_report["source"] != "live" { <p style={{"margin": "8px 0 0", "fontSize": "12px", "color": C["amber"]}}>The backend's event engine isn't connected yet, so this is a placeholder report. The dashboard numbers above are unchanged and still come from the live backend.</p> }}
+                          </div>
+                        }}
+                      </div>
+                    </div>
+
+                    <div style={card}>
+                      <div style={{"padding": "18px 22px", "borderBottom": "1px solid " + C["border"]}}><h2 style={h2}>Fleet</h2></div>
+                      <div style={{"padding": "6px 22px 10px"}}>
+                        {for tk in trucks {
+                          tkid = tk["id"] as str;
+                          is_broken = (tkid == broken_truck_id) or (tk["status"] as str == "broken");
+                          <div key={tkid} style={{"display": "flex", "justifyContent": "space-between", "alignItems": "center", "padding": "10px 0", "borderBottom": "1px solid " + C["border"], "gap": "10px"}}>
+                            <span style={{"display": "inline-flex", "alignItems": "center", "gap": "8px"}}><span style={{"width": "10px", "height": "10px", "borderRadius": "3px", "backgroundColor": truck_color_by_id[tkid], "display": "inline-block"}}></span>{tk["name"]}<span style={{"fontSize": "12px", "color": C["subtle"]}}>{fmt_int(tk["capacityKg"] as float)} kg · {fmt_int(tk["costPerKm"] as float)} LKR/km</span></span>
+                            <span style={{"fontSize": "12px", "fontWeight": "600", "padding": "3px 10px", "borderRadius": "999px", "color": C["red"] if is_broken else C["primaryDark"], "backgroundColor": C["redSoft"] if is_broken else C["primarySoft"]}}>{"broken down" if is_broken else "available"}</span>
+                          </div>
+                        }}
+                      </div>
+                    </div>
+
+                    <div style={card}>
+                      <div style={{"padding": "18px 22px", "borderBottom": "1px solid " + C["border"]}}><h2 style={h2}>Market prices</h2><div style={{"fontSize": "13px", "color": C["muted"], "marginTop": "2px"}}>LKR per kg</div></div>
+                      <div style={{"padding": "6px 22px 10px"}}>
+                        {for mk in markets {
+                          mkid = mk["id"] as str;
+                          mk_prices = mk["prices"] as dict[str, float];
+                          <div key={mkid} style={{"padding": "10px 0", "borderBottom": "1px solid " + C["border"]}}>
+                            <div style={{"display": "flex", "justifyContent": "space-between", "gap": "8px", "flexWrap": "wrap"}}>
+                              <strong style={{"fontSize": "14px"}}>{mk["name"]}</strong>
+                              <span style={{"fontSize": "12px", "color": C["subtle"]}}>demand cap {fmt_int(mk["demandCapKg"] as float)} kg</span>
+                            </div>
+                            <div style={{"display": "flex", "gap": "6px", "flexWrap": "wrap", "marginTop": "6px"}}>
+                              {for cn in mk_prices.keys() {
+                                crashed = (mkid == crash_market_id) and (cn == crash_crop);
+                                <span key={cn} style={{"fontSize": "12px", "padding": "3px 9px", "borderRadius": "999px", "backgroundColor": C["redSoft"] if crashed else C["surface2"], "border": "1px solid " + (C["red"] if crashed else C["border"]), "color": C["red"] if crashed else C["muted"], "fontWeight": "600" if crashed else "500"}}>{pretty(cn)} {str(mk_prices[cn])}{" ▼ crashed" if crashed else ""}</span>
+                              }}
+                            </div>
+                          </div>
+                        }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {if len(messages) > 0 {
+                  <div style={{"marginTop": "18px"}}>
+                    <div style={card}>
+                      <div style={{"padding": "18px 22px", "borderBottom": "1px solid " + C["border"]}}><h2 style={h2}>Farmer messages</h2><div style={{"fontSize": "13px", "color": C["muted"], "marginTop": "2px"}}>Sent to each affected farmer in their own language.</div></div>
+                      <div style={{"padding": "4px 22px 8px"}}>
+                        {for msg in messages {
+                          <div key={(msg["farmerId"] as str) + (msg["language"] as str)} style={{"padding": "12px 0", "borderBottom": "1px solid " + C["border"], "display": "flex", "gap": "12px", "alignItems": "flex-start"}}>
+                            <div style={{"width": "32px", "height": "32px", "borderRadius": "50%", "backgroundColor": C["primarySoft"], "color": C["primaryDark"], "display": "grid", "placeItems": "center", "fontWeight": "700", "fontSize": "13px", "flexShrink": "0"}}>{(msg["farmerName"] as str)[0]}</div>
+                            <div style={{"flex": "1", "minWidth": "0"}}>
+                              <div style={{"display": "flex", "gap": "8px", "alignItems": "center", "flexWrap": "wrap"}}>
+                                <strong style={{"fontSize": "14px"}}>{msg["farmerName"]}</strong>
+                                <span style={{"fontSize": "11px", "fontWeight": "700", "color": C["subtle"], "letterSpacing": "0.04em"}}>{(msg["language"] as str).upper()}</span>
+                                <span style={{"fontSize": "11px", "fontWeight": "600", "padding": "2px 8px", "borderRadius": "999px", "color": C["amber"] if (msg["isFallback"] or messages_source == "simulated") else C["blue"], "backgroundColor": C["amberSoft"] if (msg["isFallback"] or messages_source == "simulated") else C["blueSoft"]}}>{"sample message (simulated)" if messages_source == "simulated" else ("template fallback" if msg["isFallback"] else "AI-written")}</span>
+                              </div>
+                              <div style={{"marginTop": "3px", "fontSize": "15px"}}>{msg["text"]}</div>
+                            </div>
+                          </div>
+                        }}
+                      </div>
+                    </div>
+                  </div>
+                }}
+              </div>
+            }}
+
+            {if view == "farmer" {
+              <div style={{"maxWidth": "720px", "margin": "0 auto"}}>
+                <div style={{"display": "flex", "gap": "10px", "flexWrap": "wrap", "alignItems": "center", "marginBottom": "16px"}}>
+                  <select value={eff_farmer} onChange={lambda (e: ChangeEvent) { sel_farmer = e.target.value; }} aria-label={t["pick"]} style={{"flex": "1", "minWidth": "200px", "padding": "12px 14px", "border": "1px solid " + C["borderStrong"], "borderRadius": "12px", "fontSize": "16px", "fontFamily": "inherit", "backgroundColor": C["surface"], "color": C["text"]}}>
+                    {for fm in farmers { <option key={fm["id"] as str} value={fm["id"] as str}>{fm["name"]} · {fm["district"]}</option> }}
+                  </select>
+                  <div style={{"display": "flex", "gap": "4px", "padding": "4px", "backgroundColor": C["surface"], "border": "1px solid " + C["border"], "borderRadius": "12px"}}>
+                    <button onClick={lambda (e: MouseEvent) { lang = "en"; }} style={{"padding": "9px 14px", "border": "none", "borderRadius": "9px", "cursor": "pointer", "fontFamily": "inherit", "fontSize": "15px", "fontWeight": "600", "backgroundColor": C["primary"] if lang == "en" else "transparent", "color": "#FFFFFF" if lang == "en" else C["muted"]}}>English</button>
+                    <button onClick={lambda (e: MouseEvent) { lang = "si"; }} style={{"padding": "9px 14px", "border": "none", "borderRadius": "9px", "cursor": "pointer", "fontFamily": "inherit", "fontSize": "15px", "fontWeight": "600", "backgroundColor": C["primary"] if lang == "si" else "transparent", "color": "#FFFFFF" if lang == "si" else C["muted"]}}>සිංහල</button>
+                    <button onClick={lambda (e: MouseEvent) { lang = "ta"; }} style={{"padding": "9px 14px", "border": "none", "borderRadius": "9px", "cursor": "pointer", "fontFamily": "inherit", "fontSize": "15px", "fontWeight": "600", "backgroundColor": C["primary"] if lang == "ta" else "transparent", "color": "#FFFFFF" if lang == "ta" else C["muted"]}}>தமிழ்</button>
+                  </div>
+                </div>
+
+                {if eff_farmer {
+                  <div>
+                    <div style={card}>
+                      <div style={{"padding": "22px"}}>
+                        <div style={{"fontSize": "26px", "fontWeight": "700", "letterSpacing": "-0.01em"}}>{t["hello"]}, {farmer_name_by_id[eff_farmer]}</div>
+                        {for fm in farmers { if (fm["id"] as str) == eff_farmer { <div key={eff_farmer} style={{"color": C["muted"], "fontSize": "16px", "marginTop": "2px"}}>{fm["district"]}</div> } }}
+                      </div>
+                    </div>
+
+                    {if eff_farmer in harvest_by_farmer {
+                      <div style={{"marginTop": "14px"}}>
+                        <div style={card}>
+                          <div style={{"padding": "20px 22px"}}>
+                            <div style={small_label}>{t["harvest"]}</div>
+                            <div style={{"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(150px, 1fr))", "gap": "14px", "marginTop": "12px"}}>
+                              <div><div style={{"fontSize": "13px", "color": C["muted"]}}>{t["crop"]}</div><div style={{"fontSize": "20px", "fontWeight": "650"}}>{pretty(harvest_by_farmer[eff_farmer]["crop"] as str)}</div></div>
+                              <div><div style={{"fontSize": "13px", "color": C["muted"]}}>{t["qty"]}</div><div style={{"fontSize": "20px", "fontWeight": "650"}}>{fmt_int(harvest_by_farmer[eff_farmer]["kg"] as float)} kg</div></div>
+                              <div><div style={{"fontSize": "13px", "color": C["muted"]}}>{t["fresh"]}</div><div style={{"fontSize": "20px", "fontWeight": "650"}}>{fmt_int(harvest_by_farmer[eff_farmer]["shelfLifeHours"] as float)} {t["hours"]}</div></div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    }}
+
+                    {if eff_farmer in route_by_farmer {
+                      <div style={{"marginTop": "14px"}}>
+                        <div style={card}>
+                          <div style={{"padding": "20px 22px"}}>
+                            <div style={small_label}>{t["delivery"]}</div>
+                            {for fr in [route_by_farmer[eff_farmer]] {
+                              fr_id = fr["id"] as str;
+                              fr_n = len(fr["farmerIds"] as list[str]);
+                              fr_truck = fr["truckId"] as str;
+                              fr_mkt = fr["marketId"] as str;
+                              fr_plan = plan_by_route[fr_id] if fr_id in plan_by_route else {};
+                              <div key={fr_id}>
+                                <div style={{"marginTop": "10px", "padding": "12px 14px", "borderRadius": "12px", "backgroundColor": C["primarySoft"] if fr_n > 1 else C["surface2"], "color": C["primaryDark"] if fr_n > 1 else C["muted"], "fontSize": "16px", "fontWeight": "600"}}>{t["shared"].replace("{n}", str(fr_n - 1)) if fr_n > 1 else t["alone"]}</div>
+                                <div style={{"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(150px, 1fr))", "gap": "14px", "marginTop": "14px"}}>
+                                  <div><div style={{"fontSize": "13px", "color": C["muted"]}}>{t["truck"]}</div><div style={{"fontSize": "17px", "fontWeight": "650"}}>{truck_name_by_id[fr_truck] if fr_truck in truck_name_by_id else "-"}</div></div>
+                                  <div><div style={{"fontSize": "13px", "color": C["muted"]}}>{t["market"]}</div><div style={{"fontSize": "17px", "fontWeight": "650"}}>{market_name_by_id[fr_mkt] if fr_mkt in market_name_by_id else "-"}</div></div>
+                                  <div><div style={{"fontSize": "13px", "color": C["muted"]}}>{t["distance"]}</div><div style={{"fontSize": "17px", "fontWeight": "650"}}>{str(round(fr["distanceKm"] as float, 1))} km</div></div>
+                                  <div><div style={{"fontSize": "13px", "color": C["muted"]}}>{t["time"]}</div><div style={{"fontSize": "17px", "fontWeight": "650"}}>{str(round(fr["hours"] as float, 1))} {t["hours"]}</div></div>
+                                  {if fr_plan { <div><div style={{"fontSize": "13px", "color": C["muted"]}}>{t["loss"]}</div><div style={{"fontSize": "17px", "fontWeight": "650"}}>{str(round(fr_plan["expectedSpoilagePct"] as float, 1))}%</div></div> }}
+                                </div>
+                              </div>
+                            }}
+                          </div>
+                        </div>
+                      </div>
+                    }}
+
+                    <div style={{"marginTop": "14px"}}>
+                      <div style={card}>
+                        <div style={{"padding": "20px 22px"}}>
+                          <div style={small_label}>{t["messages"]}</div>
+                          {for msg in my_messages {
+                            <div key={(msg["farmerId"] as str) + (msg["language"] as str)} style={{"marginTop": "12px", "padding": "14px 16px", "backgroundColor": C["surface2"], "border": "1px solid " + C["border"], "borderRadius": "12px", "fontSize": "17px"}}>{msg["text"]}</div>
+                          }}
+                          {if len(my_messages) == 0 { <p style={{"margin": "10px 0 0", "color": C["muted"], "fontSize": "16px"}}>{t["none"]}</p> }}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{"marginTop": "14px"}}>
+                      <div style={card}>
+                        <div style={{"padding": "20px 22px"}}>
+                          <div style={small_label}>{t["log"]}</div>
+                          <textarea value={farmer_text} onChange={lambda (e: ChangeEvent) { farmer_text = e.target.value; }} rows={3} placeholder={t["ph"]} style={{"width": "100%", "marginTop": "10px", "padding": "12px 14px", "border": "1px solid " + C["borderStrong"], "borderRadius": "12px", "fontSize": "17px", "fontFamily": "inherit", "boxSizing": "border-box"}}></textarea>
+                          <button onClick={lambda (e: MouseEvent) { send_farmer_harvest(); }} disabled={running} style={{"marginTop": "12px", "width": "100%", "padding": "14px", "backgroundColor": C["primary"], "color": "#FFFFFF", "border": "none", "borderRadius": "12px", "fontSize": "17px", "fontWeight": "650", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{t["send"]}</button>
+                          {if farmer_note { <p style={{"margin": "12px 0 0", "color": C["primaryDark"], "fontSize": "16px", "fontWeight": "600"}}>{farmer_note}</p> }}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                }}
+              </div>
+            }}
           </div>
         }}
       </main>
+      <footer style={{"textAlign": "center", "padding": "22px", "fontSize": "13px", "color": C["subtle"]}}>All data simulated · Built in Jac for the Jaseci AI Hackathon 2026</footer>
     </div>;
 }
