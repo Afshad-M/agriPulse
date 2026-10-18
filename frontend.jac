@@ -2,13 +2,12 @@ import from .api_layer { fetch_seed, fetch_baseline_plan, fetch_merge, fetch_eve
 
 # AgriPulse web app (C). Light, clean dashboard + a mobile-first Farmer view.
 # FRONTEND ONLY: everything here talks to the backend through api_layer.jac
-# (a thin adapter over the CONTRACT v1 endpoints), so when the backend's
-# replan_on_event stops being a stub nothing in this file changes. Until
-# then, an event type the backend doesn't implement comes back with an
-# empty diff and a note ending "is not handled yet" (api.jac/logic.jac) -
-# the UI detects that note and shows it verbatim instead of faking an
-# effect (a crashed price, a closed road, a planned pickup) that never
-# actually happened on the backend.
+# (a thin adapter over the CONTRACT v1 endpoints). "truck_breakdown" and
+# "new_harvest" are genuinely implemented (api.jac/logic.jac), the latter
+# deterministic parsing + planning with a by llm() farmer reply. "road_closed"
+# and "price_crash" are still stubs: apply_replan_event() returns a note
+# ending "is not handled yet" for them, and the UI detects that note and
+# shows it verbatim instead of faking an effect that never happened.
 
 glob C: dict[str, str] = {
     "page": "#F4F7F5", "surface": "#FFFFFF", "surface2": "#F8FAF9",
@@ -39,27 +38,27 @@ glob UI_TEXT: dict[str, dict[str, str]] = {
         "qty": "Quantity", "fresh": "Stays fresh for", "delivery": "Your delivery", "truck": "Truck",
         "market": "Market", "distance": "Distance", "time": "Travel time", "loss": "Expected spoilage",
         "shared": "You share this truck with {n} other farmers.", "alone": "Your harvest travels on its own truck.",
-        "messages": "Messages for you", "none": "No new messages yet.", "log": "Tell us about a new harvest",
-        "ph": "For example: 80kg beans, ready in 2 hours", "send": "Send", "hours": "hours",
-        "sent": "Sent. The agent is planning a pickup for you.", "income": "Expected income"
+        "messages": "Messages for you", "none": "No new messages yet.", "hours": "hours",
+        "income": "Expected income", "log": "Tell us about a new harvest",
+        "ph": "For example: 80kg beans, ready in 2 hours", "send": "Send"
     },
     "si": {
         "hello": "ආයුබෝවන්", "pick": "ගොවියා තෝරන්න", "harvest": "ඔබේ අස්වැන්න", "crop": "බෝගය",
         "qty": "ප්‍රමාණය", "fresh": "නැවුම්ව පවතින කාලය", "delivery": "ඔබේ ප්‍රවාහනය", "truck": "ට්‍රක් රථය",
         "market": "වෙළඳපොළ", "distance": "දුර", "time": "ගමන් කාලය", "loss": "අපේක්ෂිත නරක් වීම",
         "shared": "ඔබ මෙම ට්‍රක් රථය තවත් ගොවීන් {n} දෙනෙක් සමඟ බෙදාගනී.", "alone": "ඔබේ අස්වැන්න තනිවම ට්‍රක් රථයකින් යයි.",
-        "messages": "ඔබට පණිවිඩ", "none": "තවම නව පණිවිඩ නැත.", "log": "නව අස්වැන්නක් ගැන කියන්න",
-        "ph": "උදා: බෝංචි කිලෝ 80ක්, පැය 2කින් සූදානම්", "send": "යවන්න", "hours": "පැය",
-        "sent": "යවන ලදී. ඔබේ ප්‍රවාහනය සැලසුම් කරමින් සිටී.", "income": "අපේක්ෂිත ආදායම"
+        "messages": "ඔබට පණිවිඩ", "none": "තවම නව පණිවිඩ නැත.", "hours": "පැය",
+        "income": "අපේක්ෂිත ආදායම", "log": "නව අස්වැන්නක් ගැන කියන්න",
+        "ph": "උදා: බෝංචි කිලෝ 80ක්, පැය 2කින් සූදානම්", "send": "යවන්න"
     },
     "ta": {
         "hello": "வணக்கம்", "pick": "விவசாயியைத் தேர்ந்தெடுக்கவும்", "harvest": "உங்கள் அறுவடை", "crop": "பயிர்",
         "qty": "அளவு", "fresh": "புதிதாக இருக்கும் காலம்", "delivery": "உங்கள் போக்குவரத்து", "truck": "லாரி",
         "market": "சந்தை", "distance": "தூரம்", "time": "பயண நேரம்", "loss": "எதிர்பார்க்கப்படும் வீணாதல்",
         "shared": "இந்த லாரியை மேலும் {n} விவசாயிகளுடன் பகிர்கிறீர்கள்.", "alone": "உங்கள் அறுவடை தனி லாரியில் செல்கிறது.",
-        "messages": "உங்களுக்கான செய்திகள்", "none": "புதிய செய்திகள் இல்லை.", "log": "புதிய அறுவடை பற்றி சொல்லுங்கள்",
-        "ph": "எ.கா: 80 கிலோ பீன்ஸ், 2 மணி நேரத்தில் தயார்", "send": "அனுப்பு", "hours": "மணி",
-        "sent": "அனுப்பப்பட்டது. உங்கள் போக்குவரத்து திட்டமிடப்படுகிறது.", "income": "எதிர்பார்க்கப்படும் வருமானம்"
+        "messages": "உங்களுக்கான செய்திகள்", "none": "புதிய செய்திகள் இல்லை.", "hours": "மணி",
+        "income": "எதிர்பார்க்கப்படும் வருமானம்", "log": "புதிய அறுவடை பற்றி சொல்லுங்கள்",
+        "ph": "எ.கா: 80 கிலோ பீன்ஸ், 2 மணி நேரத்தில் தயார்", "send": "அனுப்பு"
     }
 };
 
@@ -85,9 +84,12 @@ def:pub app -> JsxElement {
         sel_lane: str = "",
         sel_market: str = "",
         sel_crop: str = "",
+        sel_event_farmer: str = "",
         harvest_text: str = "",
         farmer_text: str = "",
-        farmer_note: str = "",
+        farmer_sent_text: str = "",
+        farmer_reply_text: str = "",
+        farmer_reply_is_fallback: bool = False,
         crash_market_id: str = "",
         crash_crop: str = "",
         closed_lane: str = "";
@@ -158,6 +160,7 @@ def:pub app -> JsxElement {
     eff_lane = sel_lane if sel_lane in lane_label_by_key else (lanes[0]["key"] if len(lanes) > 0 else "");
     eff_market = sel_market if sel_market in market_name_by_id else (markets[0]["id"] as str if len(markets) > 0 else "");
     eff_crop = sel_crop if sel_crop in crops else (crops[0] if len(crops) > 0 else "");
+    eff_event_farmer = sel_event_farmer if sel_event_farmer in farmer_name_by_id else (farmers[0]["id"] as str if len(farmers) > 0 else "");
 
     my_messages: list[dict[str, any]] = [];
     my_name = farmer_name_by_id[eff_farmer] if eff_farmer in farmer_name_by_id else "";
@@ -290,7 +293,8 @@ def:pub app -> JsxElement {
             crash_market_id = "";
             crash_crop = "";
             closed_lane = "";
-            farmer_note = "";
+            farmer_sent_text = "";
+            farmer_reply_text = "";
             scenario = "Baseline: every farmer ships alone";
             data_source = "real";
         } except Exception {
@@ -319,7 +323,7 @@ def:pub app -> JsxElement {
         running = False;
     }
 
-    async def run_event(kind: str, text_in: str) {
+    async def run_event(kind: str, text_in: str, farmer_id_in: str) {
         if running { return; }
         running = True;
         error = "";
@@ -327,6 +331,7 @@ def:pub app -> JsxElement {
         e_id = "";
         m_id = "";
         crop_v = "";
+        f_id = "";
         label = "";
         if kind == "truck_breakdown" {
             t_id = eff_truck;
@@ -339,10 +344,11 @@ def:pub app -> JsxElement {
             crop_v = eff_crop;
             label = "Price crash: " + pretty(crop_v) + " at " + (market_name_by_id[m_id] if m_id in market_name_by_id else "market");
         } else {
-            label = "New harvest logged";
+            f_id = farmer_id_in;
+            label = "New harvest: " + (farmer_name_by_id[f_id] if f_id in farmer_name_by_id else "farmer");
         }
         try {
-            res = await fetch_event(kind, t_id, e_id, m_id, crop_v, text_in);
+            res = await fetch_event(kind, t_id, e_id, m_id, crop_v, text_in, f_id);
             dd = res["diff"] as dict[str, any];
             notes_list = dd["notes"] as list[str];
             # logic.apply_replan_event() writes this exact note for any event
@@ -379,20 +385,41 @@ def:pub app -> JsxElement {
     }
 
     async def send_farmer_harvest() {
-        if len(farmer_text.strip()) == 0 { return; }
-        name = farmer_name_by_id[eff_farmer] if eff_farmer in farmer_name_by_id else "";
-        await run_event("new_harvest", name + ": " + farmer_text);
-        farmer_text = "";
-        if error {
-            farmer_note = "";
-        } elif event_report and event_report["source"] == "live" {
-            farmer_note = t["sent"];
-        } else {
-            # "new_harvest" isn't implemented by the backend yet (see
-            # run_event's not_handled check) - no pickup is actually
-            # planned, so don't claim one is.
-            farmer_note = "Preview only: harvest intake is not connected in this demo.";
+        text_in = farmer_text.strip();
+        if len(text_in) == 0 or running { return; }
+        running = True;
+        error = "";
+        fid = eff_farmer;
+        sent_text = text_in;
+        label = "New harvest: " + (farmer_name_by_id[fid] if fid in farmer_name_by_id else "farmer");
+        try {
+            res = await fetch_event("new_harvest", "", "", "", "", text_in, fid);
+            dd = res["diff"] as dict[str, any];
+            notes_list = dd["notes"] as list[str];
+            reply_msgs = res["messages"] as list[dict[str, any]];
+            if len(reply_msgs) > 0 {
+                farmer_reply_text = reply_msgs[0]["text"] as str;
+                farmer_reply_is_fallback = reply_msgs[0]["isFallback"] as bool;
+            } else {
+                # Parse failure (or anything else with no per-farmer message) -
+                # show the backend's note verbatim, never a faked confirmation.
+                farmer_reply_text = notes_list[0] if len(notes_list) > 0 else "";
+                farmer_reply_is_fallback = False;
+            }
+            state = res["state"] as dict[str, any];
+            score = res["score"] as dict[str, any];
+            messages = reply_msgs;
+            removed_ids = dd["removedRouteIds"] as list[str];
+            added_ids = dd["addedRouteIds"] as list[str];
+            event_report = {"title": label, "source": "live", "explanation": res["explanation"] as str, "notes": notes_list};
+            data_source = "real";
+            scenario = label;
+            farmer_sent_text = sent_text;
+            farmer_text = "";
+        } except Exception {
+            error = "That event could not be applied. Press Reset and try again.";
         }
+        running = False;
     }
 
     # ---------- view ----------
@@ -504,10 +531,15 @@ def:pub app -> JsxElement {
                           </div>
                         }}
                         {if event_kind == "new_harvest" {
-                          <textarea value={harvest_text} onChange={lambda (e: ChangeEvent) { harvest_text = e.target.value; }} rows={2} placeholder="e.g. 80kg beans near Matale, ready in 2 hours" style={field}></textarea>
+                          <div style={{"display": "flex", "flexDirection": "column", "gap": "8px"}}>
+                            <select value={eff_event_farmer} onChange={lambda (e: ChangeEvent) { sel_event_farmer = e.target.value; }} style={field}>
+                              {for fm in farmers { <option key={fm["id"] as str} value={fm["id"] as str}>{fm["name"]}</option> }}
+                            </select>
+                            <textarea value={harvest_text} onChange={lambda (e: ChangeEvent) { harvest_text = e.target.value; }} rows={2} placeholder="e.g. 80kg beans near Matale, ready in 2 hours" style={field}></textarea>
+                          </div>
                         }}
                         <div style={{"marginTop": "12px"}}>
-                          <button onClick={lambda (e: MouseEvent) { run_event(event_kind, harvest_text); }} disabled={running} style={{"padding": "10px 16px", "backgroundColor": C["text"], "color": "#FFFFFF", "border": "1px solid " + C["text"], "borderRadius": "10px", "fontSize": "14px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{"Working…" if running else "Run event"}</button>
+                          <button onClick={lambda (e: MouseEvent) { run_event(event_kind, harvest_text, eff_event_farmer if event_kind == "new_harvest" else ""); }} disabled={running} style={{"padding": "10px 16px", "backgroundColor": C["text"], "color": "#FFFFFF", "border": "1px solid " + C["text"], "borderRadius": "10px", "fontSize": "14px", "fontWeight": "600", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{"Working…" if running else "Run event"}</button>
                         </div>
                       </div>
                     </div>
@@ -670,7 +702,7 @@ def:pub app -> JsxElement {
             {if view == "farmer" {
               <div style={{"maxWidth": "720px", "margin": "0 auto"}}>
                 <div style={{"display": "flex", "gap": "10px", "flexWrap": "wrap", "alignItems": "center", "marginBottom": "16px"}}>
-                  <select value={eff_farmer} onChange={lambda (e: ChangeEvent) { sel_farmer = e.target.value; }} aria-label={t["pick"]} style={{"flex": "1", "minWidth": "200px", "padding": "12px 14px", "border": "1px solid " + C["borderStrong"], "borderRadius": "12px", "fontSize": "16px", "fontFamily": "inherit", "backgroundColor": C["surface"], "color": C["text"]}}>
+                  <select value={eff_farmer} onChange={lambda (e: ChangeEvent) { sel_farmer = e.target.value; farmer_sent_text = ""; farmer_reply_text = ""; }} aria-label={t["pick"]} style={{"flex": "1", "minWidth": "200px", "padding": "12px 14px", "border": "1px solid " + C["borderStrong"], "borderRadius": "12px", "fontSize": "16px", "fontFamily": "inherit", "backgroundColor": C["surface"], "color": C["text"]}}>
                     {for fm in farmers { <option key={fm["id"] as str} value={fm["id"] as str}>{fm["name"]} · {fm["district"]}</option> }}
                   </select>
                   <div style={{"display": "flex", "gap": "4px", "padding": "4px", "backgroundColor": C["surface"], "border": "1px solid " + C["border"], "borderRadius": "12px"}}>
@@ -751,8 +783,19 @@ def:pub app -> JsxElement {
                         <div style={{"padding": "20px 22px"}}>
                           <div style={small_label}>{t["log"]}</div>
                           <textarea value={farmer_text} onChange={lambda (e: ChangeEvent) { farmer_text = e.target.value; }} rows={3} placeholder={t["ph"]} style={{"width": "100%", "marginTop": "10px", "padding": "12px 14px", "border": "1px solid " + C["borderStrong"], "borderRadius": "12px", "fontSize": "17px", "fontFamily": "inherit", "boxSizing": "border-box"}}></textarea>
-                          <button onClick={lambda (e: MouseEvent) { send_farmer_harvest(); }} disabled={running} style={{"marginTop": "12px", "width": "100%", "padding": "14px", "backgroundColor": C["primary"], "color": "#FFFFFF", "border": "none", "borderRadius": "12px", "fontSize": "17px", "fontWeight": "650", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{t["send"]}</button>
-                          {if farmer_note { <p style={{"margin": "12px 0 0", "color": C["primaryDark"], "fontSize": "16px", "fontWeight": "600"}}>{farmer_note}</p> }}
+                          <button onClick={lambda (e: MouseEvent) { send_farmer_harvest(); }} disabled={running} style={{"marginTop": "12px", "width": "100%", "padding": "14px", "backgroundColor": C["primary"], "color": "#FFFFFF", "border": "none", "borderRadius": "12px", "fontSize": "17px", "fontWeight": "650", "cursor": "pointer", "fontFamily": "inherit", "opacity": "0.55" if running else "1"}}>{"Working…" if running else t["send"]}</button>
+
+                          {if farmer_sent_text {
+                            <div style={{"marginTop": "16px", "display": "flex", "flexDirection": "column", "gap": "10px"}}>
+                              <div style={{"alignSelf": "flex-end", "maxWidth": "85%", "padding": "12px 14px", "backgroundColor": C["primary"], "color": "#FFFFFF", "borderRadius": "14px 14px 4px 14px", "fontSize": "16px"}}>{farmer_sent_text}</div>
+                              {if farmer_reply_text {
+                                <div style={{"alignSelf": "flex-start", "maxWidth": "85%", "padding": "12px 14px", "backgroundColor": C["surface2"], "border": "1px solid " + C["border"], "borderRadius": "14px 14px 14px 4px", "fontSize": "16px"}}>
+                                  {if farmer_reply_is_fallback { <div style={{"marginBottom": "6px"}}><span style={{"fontSize": "11px", "fontWeight": "600", "padding": "2px 8px", "borderRadius": "999px", "color": C["subtle"], "backgroundColor": C["surface"]}}>Template message</span></div> }}
+                                  {farmer_reply_text}
+                                </div>
+                              }}
+                            </div>
+                          }}
                         </div>
                       </div>
                     </div>

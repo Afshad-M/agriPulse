@@ -26,7 +26,7 @@ import from data {
     SEED_MARKET_RECORDS, SEED_TRUCK_RECORDS,
 }
 import from logic { compute_baseline, BaselineRoute, run_merge_routes, apply_replan_event, ReplanOutcome }
-import from llm { explain, farmer_message, EXPLAIN_FALLBACK, FARMER_MESSAGE_FALLBACKS }
+import from llm { explain, farmer_message, parse_harvest, EXPLAIN_FALLBACK, FARMER_MESSAGE_FALLBACKS }
 
 # ---- Contract data types -----------------------------------------------
 
@@ -74,7 +74,8 @@ obj RouteInfo {
         hubIds: list[str],
         marketId: str,
         distanceKm: float,
-        hours: float;
+        hours: float,
+        harvestIds: list[str] = [];
 }
 
 obj PlanInfo {
@@ -139,7 +140,8 @@ obj Event {
         edgeId: str | None = None,     # road_closed
         marketId: str | None = None,   # price_crash
         crop: str | None = None,       # price_crash (optional) / new_harvest
-        text: str | None = None;       # new_harvest, free-text from the farmer
+        text: str | None = None,       # new_harvest, free-text from the farmer
+        farmerId: str | None = None;   # new_harvest, which farmer sent `text`
 }
 
 # ---- Endpoint result types ----------------------------------------------
@@ -241,10 +243,11 @@ def _build_seed_graph() -> None {
         farmer_by_name[f.name] = farmer_node;
     }
 
-    for h in SEED_HARVESTS {
+    for (f, h) in zip(SEED_FARMERS, SEED_HARVESTS) {
         root ++> Harvest(
             crop=h.crop, quantity_kg=h.quantity_kg, harvested_at=h.harvested_at,
             shelf_life_hours=CROP_SHELF_LIFE_HOURS.get(h.crop, 0.0),
+            farmer_id=jid(farmer_by_name[f.name]),
         );
     }
 
@@ -273,9 +276,11 @@ def _build_seed_graph() -> None {
     }
 }
 
-# readyHour is always 0.0: every data.jac Harvest's harvested_at is already
-# in the past (a negative hour offset, e.g. "-2h"), so every seeded harvest
-# is ready for pickup immediately - see docs/assumptions.md.
+# readyHour is 0.0 for every SEEDED harvest: every data.jac Harvest's
+# harvested_at is already in the past (a negative hour offset, e.g. "-2h"),
+# so every seeded harvest is ready for pickup immediately - see
+# docs/assumptions.md. A harvest added live via the "new_harvest" event
+# carries whatever readyHour its farmer's message implied (default 0.0).
 def _real_state(routes: list[RouteInfo] = [], plans: list[PlanInfo] = []) -> State {
     farmers = [root -->][?:Farmer];
     harvests = [root -->][?:Harvest];
@@ -289,10 +294,10 @@ def _real_state(routes: list[RouteInfo] = [], plans: list[PlanInfo] = []) -> Sta
     ];
     harvest_infos = [
         HarvestInfo(
-            id=jid(harvest), farmerId=jid(farmer), crop=harvest.crop,
-            kg=harvest.quantity_kg, readyHour=0.0, shelfLifeHours=harvest.shelf_life_hours,
+            id=jid(harvest), farmerId=harvest.farmer_id, crop=harvest.crop,
+            kg=harvest.quantity_kg, readyHour=harvest.ready_hour, shelfLifeHours=harvest.shelf_life_hours,
         )
-        for (farmer, harvest) in zip(farmers, harvests)
+        for harvest in harvests
     ];
     hub_infos = [HubInfo(id=jid(h), name=h.name, district=h.district) for h in hubs];
     market_infos = [
@@ -375,6 +380,7 @@ def _current_plan_route_infos() -> list[RouteInfo] {
         RouteInfo(
             id=p.route_id, truckId=p.truck_id, farmerIds=p.farmer_ids,
             hubIds=p.hub_ids, marketId=p.market_id, distanceKm=p.distance_km, hours=p.hours,
+            harvestIds=p.harvest_ids,
         )
         for p in plans
     ];
@@ -391,12 +397,10 @@ def _current_plan_plan_infos() -> list[PlanInfo] {
     ];
 }
 
-def _kg_by_farmer_id() -> dict[str, float] {
-    farmers = [root -->][?:Farmer];
-    harvests = [root -->][?:Harvest];
+def _kg_by_harvest_id() -> dict[str, float] {
     out: dict[str, float] = {};
-    for (farmer, harvest) in zip(farmers, harvests) {
-        out[jid(farmer)] = harvest.quantity_kg;
+    for h in [root -->][?:Harvest] {
+        out[jid(h)] = h.quantity_kg;
     }
     return out;
 }
@@ -404,10 +408,11 @@ def _kg_by_farmer_id() -> dict[str, float] {
 # Same kg-weighted-spoilage/summed-income/summed-truckCost shape as
 # _aggregate_score, but generic over any RouteInfo/PlanInfo list (not just
 # one-harvest-per-route baseline routes) - a merged route can carry
-# several farmerIds, so kg is summed per route from State.harvests rather
-# than assumed 1:1 with a positional harvest.
+# several harvestIds (a farmer can contribute more than one, e.g. after
+# new_harvest), so kg is summed per route by harvest id, never by farmer
+# id, to stay unambiguous.
 def _aggregate_score_from_routes(routes: list[RouteInfo], plans: list[PlanInfo]) -> ScoreSet {
-    kg_by_farmer = _kg_by_farmer_id();
+    kg_by_harvest = _kg_by_harvest_id();
     plan_by_route_id: dict[str, PlanInfo] = {};
     for p in plans {
         plan_by_route_id[p.routeId] = p;
@@ -423,8 +428,8 @@ def _aggregate_score_from_routes(routes: list[RouteInfo], plans: list[PlanInfo])
             continue;
         }
         route_kg = 0.0;
-        for fid in r.farmerIds {
-            route_kg += kg_by_farmer.get(fid, 0.0);
+        for hid in r.harvestIds {
+            route_kg += kg_by_harvest.get(hid, 0.0);
         }
         total_income += plan.expectedIncome;
         total_truck_cost += plan.truckCost;
@@ -598,7 +603,341 @@ def _build_messages(outcome: ReplanOutcome, routes_after: list[RouteInfo]) -> li
     return messages;
 }
 
+# ---- new_harvest (owner: A) -----------------------------------------
+# A deterministic, code-only parser for a farmer's free-text harvest
+# report - "80kg beans, ready in 2 hours" and friends. Runs BEFORE
+# llm.parse_harvest() is ever consulted (CLAUDE.md: the LLM is never
+# required) and is good enough on its own to power the whole feature with
+# no API key configured. Splits digit/letter runs apart so "80kg" and
+# "80 kg" tokenize the same way, without a regex dependency.
+def _tokenize(text: str) -> list[str] {
+    out: list[str] = [];
+    buf = "";
+    buf_kind = "";   # "digit" | "alpha" | ""
+    for ch in text.lower() {
+        if ch.isdigit() or ch == "." {
+            kind = "digit";
+        } elif ch.isalpha() {
+            kind = "alpha";
+        } else {
+            kind = "";
+        }
+        if kind == "" {
+            if buf != "" {
+                out.append(buf);
+                buf = "";
+            }
+            buf_kind = "";
+            continue;
+        }
+        if buf_kind != "" and buf_kind != kind {
+            out.append(buf);
+            buf = "";
+        }
+        buf += ch;
+        buf_kind = kind;
+    }
+    if buf != "" {
+        out.append(buf);
+    }
+    return out;
+}
+
+def _is_number(tok: str) -> bool {
+    try {
+        float(tok);
+        return True;
+    } except Exception {
+        return False;
+    }
+}
+
+glob KG_UNIT_WORDS: set[str] = {"kg", "kgs", "kilo", "kilos", "kilogram", "kilograms"};
+
+# "beans" is already the plural-only crop key data.jac/CROP_SHELF_LIFE_HOURS
+# uses, so "bean"/"beans" both map to it; the others get their plain -s.
+glob CROP_SURFACE_FORMS: dict[str, str] = {
+    "tomato": "tomato", "tomatoes": "tomato",
+    "bean": "beans", "beans": "beans",
+    "carrot": "carrot", "carrots": "carrot",
+};
+
+def _extract_crop(tokens: list[str]) -> str {
+    n = len(tokens);
+    i = 0;
+    while i < n {
+        if i < n - 1 and tokens[i] == "leafy" and tokens[i + 1] in ("green", "greens") {
+            return "leafy_greens";
+        }
+        if tokens[i] in CROP_SURFACE_FORMS {
+            return CROP_SURFACE_FORMS[tokens[i]];
+        }
+        i += 1;
+    }
+    return "";
+}
+
+def _normalize_crop(raw: str) -> str {
+    return _extract_crop(_tokenize(raw));
+}
+
+obj ParsedHarvest {
+    has ok: bool = False,
+        crop: str = "",
+        quantity_kg: float = 0.0,
+        ready_hour: float = 0.0;
+}
+
+# Deterministic parse of a farmer's free-text harvest report. `ok` is True
+# only once BOTH a kg quantity (a number immediately followed by a kg/kilo
+# unit word) and a known crop are found; `ready_hour` is read independently
+# ("ready [in] N hours", default 0.0) so it still comes through even on a
+# partial match that an LLM fallback later completes.
+def parse_harvest_text(text: str) -> ParsedHarvest {
+    tokens = _tokenize(text);
+    n = len(tokens);
+
+    quantity_kg = 0.0;
+    found_qty = False;
+    i = 0;
+    while i < n - 1 {
+        if _is_number(tokens[i]) and tokens[i + 1] in KG_UNIT_WORDS {
+            quantity_kg = float(tokens[i]);
+            found_qty = True;
+            break;
+        }
+        i += 1;
+    }
+
+    crop = _extract_crop(tokens);
+
+    ready_hour = 0.0;
+    i = 0;
+    while i < n {
+        if tokens[i] == "ready" {
+            j = i + 1;
+            if j < n and tokens[j] == "in" {
+                j += 1;
+            }
+            if j < n and _is_number(tokens[j]) {
+                ready_hour = float(tokens[j]);
+            }
+            break;
+        }
+        i += 1;
+    }
+
+    return ParsedHarvest(ok=found_qty and crop != "", crop=crop, quantity_kg=quantity_kg, ready_hour=ready_hour);
+}
+
+# llm.parse_harvest() is consulted ONLY when the deterministic parser above
+# couldn't find a crop+kg - never required, and its crop is re-validated
+# against the same known-crop list before being trusted (CLAUDE.md: by
+# llm() output is never trusted blindly). llm.jac's HarvestDraft has no
+# notion of "ready in N hours", so ready_hour always comes from the
+# deterministic pass, even on this upgrade path.
+def _parse_new_harvest(text: str) -> ParsedHarvest {
+    parsed = parse_harvest_text(text);
+    if parsed.ok {
+        return parsed;
+    }
+    try {
+        draft = parse_harvest(text);
+    } except Exception {
+        return parsed;
+    }
+    if draft.is_fallback {
+        return parsed;
+    }
+    crop = _normalize_crop(draft.crop);
+    if crop == "" or draft.quantity_kg <= 0.0 {
+        return parsed;
+    }
+    return ParsedHarvest(ok=True, crop=crop, quantity_kg=draft.quantity_kg, ready_hour=parsed.ready_hour);
+}
+
+def _crop_display(crop: str) -> str {
+    return crop.replace("_", " ");
+}
+
+def _farmer_by_id(fid: str | None) -> Farmer | None {
+    if fid is None or fid == "" {
+        return None;
+    }
+    try {
+        f = jobj(fid);
+    } except Exception {
+        return None;
+    }
+    if f is not None and isinstance(f, Farmer) {
+        return f;
+    }
+    return None;
+}
+
+glob NEW_HARVEST_PARSE_FAILURE_NOTE: str = "I couldn't understand that. Try: 80kg beans, ready in 2 hours.";
+
+# Deterministic per-language confirmation templates (isFallback=True), same
+# machine-drafted-Sinhala/Tamil caveat as llm.jac's FARMER_MESSAGE_FALLBACKS
+# and logic.jac's BREAKDOWN_MESSAGE_TEMPLATES - have a native speaker check
+# these before the demo.
+def _new_harvest_message_text(language: str, crop_display: str, kg: float, truck_name: str) -> str {
+    if language == "si" {
+        return f"ඔබේ {crop_display} කිලෝ {kg:.0f}ක් ලැබී ඇත. එය {truck_name} රථය මගින් රැගෙන යනු ඇත.";
+    } elif language == "ta" {
+        return f"உங்கள் {crop_display} {kg:.0f} கிலோ பதிவு செய்யப்பட்டது. இதை {truck_name} லாரி சேகரிக்கும்.";
+    }
+    return f"We've recorded {kg:.0f} kg of {crop_display}. Truck {truck_name} will collect it.";
+}
+
+# removedRouteIds/addedRouteIds/reassigned by comparing each route's exact
+# farmerIds list (its "signature") before vs after re-planning - NOT raw
+# route ids, which run_merge_routes() reassigns fresh (r1, r2, m1, ...) on
+# every call regardless of whether a given group of farmers changed at
+# all. A route whose farmer composition is byte-identical before and after
+# is untouched and never appears in the diff; same composition but a
+# different truck is a reassignment; a composition that only now exists is
+# added; one that no longer exists (folded into a bigger group) is removed.
+obj DiffParts {
+    has removedRouteIds: list[str],
+        addedRouteIds: list[str],
+        reassigned: list[Reassignment];
+}
+
+def _route_signature(r: RouteInfo) -> str {
+    return "|".join(r.farmerIds);
+}
+
+def _diff_before_after(before: list[RouteInfo], after: list[RouteInfo]) -> DiffParts {
+    before_by_sig: dict[str, RouteInfo] = {};
+    for r in before {
+        before_by_sig[_route_signature(r)] = r;
+    }
+    after_by_sig: dict[str, RouteInfo] = {};
+    for r in after {
+        after_by_sig[_route_signature(r)] = r;
+    }
+
+    removed_ids: list[str] = [];
+    added_ids: list[str] = [];
+    reassigned: list[Reassignment] = [];
+
+    for sig in before_by_sig.keys() {
+        if sig not in after_by_sig {
+            removed_ids.append(before_by_sig[sig].id);
+        }
+    }
+    for sig in after_by_sig.keys() {
+        if sig not in before_by_sig {
+            added_ids.append(after_by_sig[sig].id);
+        } elif before_by_sig[sig].truckId != after_by_sig[sig].truckId {
+            reassigned.append(Reassignment(
+                routeId=after_by_sig[sig].id,
+                fromTruckId=before_by_sig[sig].truckId,
+                toTruckId=after_by_sig[sig].truckId,
+            ));
+        }
+    }
+    return DiffParts(removedRouteIds=removed_ids, addedRouteIds=added_ids, reassigned=reassigned);
+}
+
+def _route_for_harvest(routes: list[RouteInfo], harvest_id: str) -> RouteInfo | None {
+    for r in routes {
+        if harvest_id in r.harvestIds {
+            return r;
+        }
+    }
+    return None;
+}
+
+def _handle_new_harvest_event(event: Event) -> ReplanResult {
+    before_routes = _current_plan_route_infos();
+    before_plans = _current_plan_plan_infos();
+    before_score = _aggregate_score_from_routes(before_routes, before_plans);
+    baseline_score_now = _aggregate_score(compute_baseline()).baseline;
+
+    text = event.text if event.text is not None else "";
+    farmer = _farmer_by_id(event.farmerId);
+    parsed = _parse_new_harvest(text);
+
+    if farmer is None or not parsed.ok {
+        return ReplanResult(
+            diff=Diff(removedRouteIds=[], addedRouteIds=[], reassigned=[], notes=NEW_HARVEST_PARSE_FAILURE_NOTE),
+            state=_real_state(routes=before_routes, plans=before_plans),
+            score=Score(baseline=baseline_score_now, agent=before_score),
+            explanation=NEW_HARVEST_PARSE_FAILURE_NOTE,
+            messages=[],
+        );
+    }
+
+    new_harvest = Harvest(
+        crop=parsed.crop, quantity_kg=parsed.quantity_kg, harvested_at="0h",
+        shelf_life_hours=CROP_SHELF_LIFE_HOURS.get(parsed.crop, 0.0),
+        farmer_id=jid(farmer), ready_hour=parsed.ready_hour,
+    );
+    root ++> new_harvest;
+    new_harvest_id = jid(new_harvest);
+
+    run_merge_routes();
+
+    routes = _current_plan_route_infos();
+    plans = _current_plan_plan_infos();
+    baseline_score = _aggregate_score(compute_baseline()).baseline;
+    agent_score = _aggregate_score_from_routes(routes, plans);
+
+    diff_parts = _diff_before_after(before_routes, routes);
+    after_route = _route_for_harvest(routes, new_harvest_id);
+    crop_display = _crop_display(parsed.crop);
+    truck_name = _truck_plate(after_route.truckId if after_route is not None else None);
+    pooled = after_route is not None and len(after_route.farmerIds) > 1;
+    verb = "pooled onto" if pooled else "shipping solo on";
+    route_label = after_route.id if after_route is not None else "an unassigned route";
+    notes = (
+        f"Added {parsed.quantity_kg:.0f} kg {crop_display} for {farmer.name}; "
+        + f"{verb} truck {truck_name} with route {route_label}."
+    );
+
+    diff = Diff(
+        removedRouteIds=diff_parts.removedRouteIds,
+        addedRouteIds=diff_parts.addedRouteIds,
+        reassigned=diff_parts.reassigned,
+        notes=notes,
+    );
+
+    language = farmer.language if farmer.language in FARMER_MESSAGE_FALLBACKS else "en";
+    text_out = _new_harvest_message_text(language, crop_display, parsed.quantity_kg, truck_name);
+    is_fallback = True;
+    plan_summary = (
+        f"Farmer {farmer.name} reported a new harvest: {parsed.quantity_kg:.0f} kg of {crop_display}. "
+        + f"It will be collected by truck {truck_name}."
+    );
+    fallback_text = FARMER_MESSAGE_FALLBACKS.get(language, FARMER_MESSAGE_FALLBACKS["en"]);
+    llm_text: str | None = None;
+    try {
+        llm_text = farmer_message(plan_summary, language);
+    } except Exception {
+        llm_text = None;
+    }
+    if llm_text is not None and llm_text.strip() != "" and llm_text != fallback_text {
+        text_out = llm_text;
+        is_fallback = False;
+    }
+    message = Message(farmerId=jid(farmer), farmerName=farmer.name, language=language, text=text_out, isFallback=is_fallback);
+
+    return ReplanResult(
+        diff=diff,
+        state=_real_state(routes=routes, plans=plans),
+        score=Score(baseline=baseline_score, agent=agent_score),
+        explanation=notes,
+        messages=[message],
+    );
+}
+
 def:pub replan_on_event(event: Event) -> ReplanResult {
+    if event.type == "new_harvest" {
+        return _handle_new_harvest_event(event);
+    }
+
     # Captured BEFORE apply_replan_event() mutates the current plan, so
     # _build_explanation() can report a real before/after, not before==after.
     before_routes = _current_plan_route_infos();

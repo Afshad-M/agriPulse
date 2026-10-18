@@ -412,3 +412,113 @@ test "replan_on_event: messages are scoped to affected farmers only" {
     del farmer_a; del farmer_b; del farmer_c;
     del harvest_a; del harvest_b; del harvest_c;
 }
+
+#   ---- parse_harvest_text (deterministic, no LLM, no API key needed) ----
+
+test "parse_harvest_text: '80kg beans, ready in 2 hours'" {
+    result = parse_harvest_text("80kg beans, ready in 2 hours");
+    assert result.ok;
+    assert result.crop == "beans";
+    assert abs(result.quantity_kg - 80.0) < 1e-6;
+    assert abs(result.ready_hour - 2.0) < 1e-6;
+}
+
+test "parse_harvest_text: '200 kg tomatoes'" {
+    result = parse_harvest_text("200 kg tomatoes");
+    assert result.ok;
+    assert result.crop == "tomato";
+    assert abs(result.quantity_kg - 200.0) < 1e-6;
+    assert abs(result.ready_hour - 0.0) < 1e-6;   # no "ready" clause - defaults to 0
+}
+
+test "parse_harvest_text: '50 kilos of carrot ready in 5 hours'" {
+    result = parse_harvest_text("50 kilos of carrot ready in 5 hours");
+    assert result.ok;
+    assert result.crop == "carrot";
+    assert abs(result.quantity_kg - 50.0) < 1e-6;
+    assert abs(result.ready_hour - 5.0) < 1e-6;
+}
+
+test "parse_harvest_text: leafy greens, plain 'ready' (no 'in') still reads the hours" {
+    result = parse_harvest_text("90 kg leafy greens ready 3 hours");
+    assert result.ok;
+    assert result.crop == "leafy_greens";
+    assert abs(result.quantity_kg - 90.0) < 1e-6;
+    assert abs(result.ready_hour - 3.0) < 1e-6;
+}
+
+test "parse_harvest_text: garbage text never crashes and fails to parse" {
+    result = parse_harvest_text("asdf qwerty zzz lorem ipsum");
+    assert not result.ok;
+}
+
+test "parse_harvest_text: empty text never crashes and fails to parse" {
+    result = parse_harvest_text("");
+    assert not result.ok;
+    assert abs(result.quantity_kg - 0.0) < 1e-6;
+}
+
+#   ---- new_harvest event (api.jac) --------------------------------------
+#
+# No API key in this environment (see .env.example/jac.toml's
+# [byllm.model]), so llm.parse_harvest()/llm.farmer_message() both run on
+# their own fallback path - these tests exercise the DETERMINISTIC parser
+# and DETERMINISTIC message template end to end, per CLAUDE.md ("the LLM
+# is never required").
+
+test "new_harvest: adds a harvest, returns a non-empty diff and a message for that farmer" {
+    seeded = load_seed().state;
+    farmer = seeded.farmers[0];
+
+    event = Event(type="new_harvest", farmerId=farmer.id, text="80kg beans, ready in 2 hours");
+    result = replan_on_event(event);
+
+    assert isinstance(result, ReplanResult);
+    assert len(result.state.harvests) == 13;   # the 12 seeded + this one
+    matching = [h for h in result.state.harvests if h.farmerId == farmer.id and h.crop == "beans"];
+    assert len(matching) == 1;
+    assert abs(matching[0].kg - 80.0) < 1e-6;
+
+    assert result.diff.notes.strip() != "";
+    assert farmer.name in result.diff.notes;
+    assert "beans" in result.diff.notes;
+
+    assert len(result.messages) == 1;
+    message = result.messages[0];
+    assert message.farmerId == farmer.id;
+    assert message.isFallback;   # no API key here - deterministic template
+    assert message.text.strip() != "";
+}
+
+test "new_harvest: unknown input returns the note without crashing and without changing state" {
+    seeded = load_seed().state;
+    farmer = seeded.farmers[0];
+
+    event = Event(type="new_harvest", farmerId=farmer.id, text="the quick brown fox");
+    result = replan_on_event(event);
+
+    assert isinstance(result, ReplanResult);
+    assert result.diff.removedRouteIds == [];
+    assert result.diff.addedRouteIds == [];
+    assert result.diff.reassigned == [];
+    assert result.diff.notes == "I couldn't understand that. Try: 80kg beans, ready in 2 hours.";
+    assert result.messages == [];
+
+    after = load_seed().state;   # re-seed just to count - new_harvest above must not have added anything
+    assert len(after.harvests) == 12;
+}
+
+test "new_harvest: load_seed after a new_harvest restores the baseline" {
+    seeded = load_seed().state;
+    farmer = seeded.farmers[0];
+
+    event = Event(type="new_harvest", farmerId=farmer.id, text="80kg beans, ready in 2 hours");
+    replan_on_event(event);
+
+    reloaded = load_seed();
+    assert len(reloaded.state.harvests) == 12;
+    assert len(reloaded.state.farmers) == 12;
+
+    base = baseline_plan();
+    assert len(base.state.routes) == 12;
+}
