@@ -1,7 +1,10 @@
 """agriPulse - Shape tests for api.jac contract endpoints (owner: A).
 
 load_seed(), baseline_plan() and merge_routes() are real (build/read the
-actual graph from data.jac's 12-farmer seed). replan_on_event() is real
+actual graph from data.jac's 50-farmer seed - the original 12-farmer/
+4-hub/3-market/3-truck fixture plus a second, separate island-wide
+component with no route back into it; see data.jac's module docstring).
+replan_on_event() is real
 for "truck_breakdown"; every other event type is still a documented no-op
 (see logic.jac). logic.pick_replacement_truck() is a deliberate stub, so
 tests needing a real truck reassignment are EXPECTED TO FAIL until it's
@@ -19,11 +22,11 @@ test "load_seed matches contract shape" {
     assert isinstance(result.state, State);
 
     state = result.state;
-    assert len(state.farmers) == 12;
-    assert len(state.harvests) == 12;
-    assert len(state.hubs) == 4;
-    assert len(state.markets) == 3;
-    assert len(state.trucks) == 3;
+    assert len(state.farmers) == 50;
+    assert len(state.harvests) == 50;
+    assert len(state.hubs) == 9;
+    assert len(state.markets) == 7;
+    assert len(state.trucks) == 9;
     assert len(state.routes) == 0;   # nothing planned yet - that's baseline_plan()'s job
     assert len(state.plans) == 0;
 
@@ -57,11 +60,11 @@ test "load_seed matches contract shape" {
 test "load_seed is idempotent: same counts on repeat calls, no duplicates" {
     first = load_seed().state;
     second = load_seed().state;
-    assert len(first.farmers) == len(second.farmers) == 12;
-    assert len(first.harvests) == len(second.harvests) == 12;
-    assert len(first.hubs) == len(second.hubs) == 4;
-    assert len(first.markets) == len(second.markets) == 3;
-    assert len(first.trucks) == len(second.trucks) == 3;
+    assert len(first.farmers) == len(second.farmers) == 50;
+    assert len(first.harvests) == len(second.harvests) == 50;
+    assert len(first.hubs) == len(second.hubs) == 9;
+    assert len(first.markets) == len(second.markets) == 7;
+    assert len(first.trucks) == len(second.trucks) == 9;
 }
 
 test "baseline_plan matches contract shape" {
@@ -69,8 +72,8 @@ test "baseline_plan matches contract shape" {
     result = baseline_plan();
     assert isinstance(result, BaselinePlanResult);
     assert isinstance(result.state, State);
-    assert len(result.state.routes) == 12;
-    assert len(result.state.plans) == 12;
+    assert len(result.state.routes) == 50;
+    assert len(result.state.plans) == 50;
 
     route = result.state.routes[0];
     assert isinstance(route.truckId, str);
@@ -296,25 +299,47 @@ test "replan_on_event: the same truck_breakdown event twice gives identical resu
     assert len([t for t in reloaded.state.trucks if t.status == "broken"]) == 0;
 }
 
-test "truck_breakdown on the real seed: breaking the truck behind m1/m3/m6/m8 leaves 0 unserved" {
-    # merge_routes() over the full 12-farmer seed always produces merged
-    # routes m1/m3/m6/m8, all four on WP CAB-1001 - it's the smallest truck,
-    # and every one of those merged loads (390/190/500/880 kg) still fits
-    # under its 1000kg cap, so logic.jac's smallest-fitting-truck pick keeps
-    # landing on it. Breaking that truck therefore affects all 12 farmers /
-    # 1960kg total at once. The only other trucks are CP CAB-1500 (1500kg)
-    # and MH CAB-2000 (2000kg) - 3500kg of spare capacity, comfortably more
-    # than the 1960kg that needs a new home - so with the biggest route
-    # (m8, 880kg) given first pick of the free trucks, and the smaller
-    # routes then folding onto spare capacity (direct or already-
-    # reassigned), every farmer should end up served. If a future seed or
-    # assumptions change ever breaks this math, this test documents the
-    # exact numbers so a human can look instead of silently forcing it.
+test "truck_breakdown on the real seed: breaking the truck behind the original 12-farmer merge leaves 0 unserved" {
+    # merge_routes() over the original 12-farmer fixture (Dambulla/Nuwara
+    # Eliya/Kandy/Matale) always produces four merged routes, one per hub -
+    # 390/190/500/880 kg - all landing on WP CAB-1001, the smallest truck in
+    # the whole fleet, since every one of those loads still fits under its
+    # 1000kg cap. Breaking that truck therefore affects all 12 farmers /
+    # 1960kg total at once. The only other original-fleet trucks are
+    # CP CAB-1500 (1500kg) and MH CAB-2000 (2000kg) - 3500kg of spare
+    # capacity, comfortably more than the 1960kg that needs a new home - so
+    # with the biggest route (880kg) given first pick of the free trucks,
+    # and the smaller routes then folding onto spare capacity (direct or
+    # already-reassigned), every farmer should end up served.
+    #
+    # The expanded (50-farmer) seed adds a second, separate island-wide
+    # component with its own hubs/markets, kept unreachable from this one
+    # (see data.jac's module docstring) so it can never merge WITH these
+    # routes - but run_merge_routes()'s merge-id counter ("m1", "m2", ...)
+    # is one global sequence across the whole graph, so which literal ids
+    # this fixture's four routes land on now depends on merge order
+    # island-wide. Identify them by FARMER membership instead - that's
+    # invariant to the rest of the graph - not by a hardcoded id list. If a
+    # future seed or assumptions change ever breaks this math, this test
+    # documents the exact numbers so a human can look instead of silently
+    # forcing it.
     load_seed();
     merged = merge_routes();
 
-    target_routes = [r for r in merged.state.routes if r.id in ["m1", "m3", "m6", "m8"]];
-    assert len(target_routes) == 4, "seed/merge shape changed - m1/m3/m6/m8 no longer all exist";
+    original_farmer_names = [
+        "Kamal Perera", "Nimal Silva", "Sunil Fernando", "Ranjan Gunawardena", "Chaminda Rathnayake",
+        "Priyantha Jayasuriya", "Mahinda Wickramasinghe",
+        "Susantha Dissanayake", "Anura Bandara",
+        "Gayan Senanayake", "Nalin Kumara", "Lasantha Weerasinghe",
+    ];
+    original_farmer_ids = set([f.id for f in merged.state.farmers if f.name in original_farmer_names]);
+    assert len(original_farmer_ids) == 12, "original 12-farmer fixture no longer resolves by name";
+
+    target_routes = [
+        r for r in merged.state.routes
+        if len(r.farmerIds) > 1 and set(r.farmerIds).issubset(original_farmer_ids)
+    ];
+    assert len(target_routes) == 4, "seed/merge shape changed - the original fixture no longer merges into 4 routes";
 
     truck_ids = set([r.truckId for r in target_routes]);
     assert len(truck_ids) == 1, "m1/m3/m6/m8 are expected to all share one truck in this seed";
@@ -474,7 +499,7 @@ test "new_harvest: adds a harvest, returns a non-empty diff and a message for th
     result = replan_on_event(event);
 
     assert isinstance(result, ReplanResult);
-    assert len(result.state.harvests) == 13;   # the 12 seeded + this one
+    assert len(result.state.harvests) == 51;   # the 50 seeded + this one
     matching = [h for h in result.state.harvests if h.farmerId == farmer.id and h.crop == "beans"];
     assert len(matching) == 1;
     assert abs(matching[0].kg - 80.0) < 1e-6;
@@ -505,7 +530,7 @@ test "new_harvest: unknown input returns the note without crashing and without c
     assert result.messages == [];
 
     after = load_seed().state;   # re-seed just to count - new_harvest above must not have added anything
-    assert len(after.harvests) == 12;
+    assert len(after.harvests) == 50;
 }
 
 test "new_harvest: load_seed after a new_harvest restores the baseline" {
@@ -516,9 +541,9 @@ test "new_harvest: load_seed after a new_harvest restores the baseline" {
     replan_on_event(event);
 
     reloaded = load_seed();
-    assert len(reloaded.state.harvests) == 12;
-    assert len(reloaded.state.farmers) == 12;
+    assert len(reloaded.state.harvests) == 50;
+    assert len(reloaded.state.farmers) == 50;
 
     base = baseline_plan();
-    assert len(base.state.routes) == 12;
+    assert len(base.state.routes) == 50;
 }

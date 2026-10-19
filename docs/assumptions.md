@@ -19,22 +19,33 @@ in the UI.
 
 ## Seed data specifics (`data.jac`)
 
-- **12 farmers** across four Sri Lankan districts (Dambulla, Nuwara Eliya,
-  Kandy, Matale). Names, phone numbers, and harvest quantities are
-  invented for this demo.
-- **4 crops** with an illustrative shelf-life lookup (not a `models.jac`
+- **50 farmers** across nine Sri Lankan districts, in two separate
+  components (no route connects them — see below): the original
+  **12 farmers** in Dambulla/Nuwara Eliya/Kandy/Matale, plus **38 more**
+  spread across Jaffna, Anuradhapura, Badulla, Ratnapura and Galle. Names,
+  phone numbers, and harvest quantities are invented for this demo; place
+  names (districts, hub/market towns) are real.
+- **7 crops** with an illustrative shelf-life lookup (not a `models.jac`
   field, just reference data for scoring): tomato 72h, beans 48h, leafy
-  greens 24h, carrot 120h.
-- **4 hubs**, each with an illustrative `capacity_kg`.
-- **3 markets** (Dambulla Economic Centre, Colombo Manning Market, Kandy
-  Market), each with an illustrative aggregate `demand_kg` (still a single
-  cap, not per-crop) and, since the real loader landed, a per-crop
-  `prices` dict (LKR/kg) pulled from `SEED_MARKET_RECORDS` — see "Additive
-  `models.jac` fields" below.
-- **3 trucks** (1000kg / 1500kg / 2000kg capacity) with invented plate
+  greens 24h, carrot 120h, onion 480h, chili 96h, cabbage 168h.
+- **9 hubs**, each with an illustrative `capacity_kg`.
+- **7 markets** (Dambulla Economic Centre, Colombo Manning Market, Kandy
+  Market, Jaffna Market, Anuradhapura Economic Centre, Badulla Economic
+  Centre, Galle Market), each with an illustrative aggregate `demand_kg`
+  (still a single cap, not per-crop) and, since the real loader landed, a
+  per-crop `prices` dict (LKR/kg) pulled from `SEED_MARKET_RECORDS` — see
+  "Additive `models.jac` fields" below.
+- **9 trucks** (1000–2600kg capacity, ~95–110 LKR/km) with invented plate
   numbers.
 - A **hand-written** hub↔hub and hub→market distance/hours matrix
   (`SEED_HUB_ROUTES`, `SEED_HUB_MARKET_ROUTES`) — not from any maps API.
+  **Deliberately two disconnected components**: the original 4 hubs/3
+  markets have no route to/from the 5 new hubs/4 new markets, and vice
+  versa. This is a merge-engine constraint, not a geography one —
+  `logic.jac`'s merge only ever pairs two baseline routes bound for the
+  same `market_id`, so keeping the new hubs shipping only to the new
+  markets means the original 12-farmer merge/breakdown demo (below)
+  computes byte-for-byte the same as before the expansion.
 - `harvested_at` on each `Harvest` is a simulated relative offset from
   scenario load time (e.g. `"-2h"` = harvested 2 hours before load), not a
   real timestamp.
